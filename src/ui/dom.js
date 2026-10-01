@@ -25,7 +25,7 @@ const stack = [];
 export function openModal({ title, content, wide = false, onClose }) {
   const el = html(`
     <div class="modal-backdrop">
-      <div class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true">
+      <div class="modal ${wide === 'xl' ? 'wide xl' : wide ? 'wide' : ''}" role="dialog" aria-modal="true">
         <div class="modal-head"><h3></h3><button class="icon-btn" data-close title="关闭">✕</button></div>
         <div class="modal-body">${content}</div>
       </div>

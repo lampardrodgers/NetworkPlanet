@@ -8,6 +8,7 @@
   </head>
   <body>
     <div id="globe"></div>
+    <div id="flat" class="hidden"></div>
 
     <header id="topbar">
       <div class="brand">
@@ -18,18 +19,26 @@
       <div class="actions">
         <button class="btn primary" data-action="add-server" title="添加服务器">＋ 服务器</button>
         <button class="btn" data-action="add-link" title="添加连接">⇄ 连接</button>
+        <button class="btn" data-action="install" title="一条命令在所有 VPS 上安装探针">⤓ 安装探针</button>
         <button class="btn" data-action="providers" title="通过供应商 API 导入">☁ API 导入</button>
         <button class="btn" data-action="matrix" title="互联延迟矩阵">▦ 矩阵</button>
         <button class="btn" data-action="import-export" title="JSON 导入导出">⇅</button>
+        <button class="btn bell" data-action="events" title="告警">🔔<span class="badge-n hidden"></span></button>
         <button class="btn" data-action="settings" title="设置">⚙</button>
       </div>
     </header>
 
     <aside id="sidebar"></aside>
+    <aside id="routepanel" class="hidden"></aside>
     <aside id="detail" class="hidden"></aside>
 
     <div id="viewbar">
+      <button class="chip" data-mode="globe" title="3D 地球">🌐 地球</button>
+      <button class="chip" data-mode="flat" title="平面点阵地图">🗺 平面</button>
+      <button class="chip" data-mode="route" title="从本机 / 某台服务器 / 某个运营商出发，看到每台 VPS 怎么走、哪些需要中转">🧭 线路</button>
+      <span class="sep"></span>
       <button class="chip" data-toggle="autoRotate" title="自动旋转">⟳ 自转</button>
+      <button class="chip" data-toggle="flatLocked" title="锁定左右边界：只显示一份世界地图，仍可缩放和拖动，但不能越过地图边缘；关闭后可以无限左右滑动">🔒 锁定</button>
       <button class="chip" data-toggle="showLinks" title="显示手动连接">⇄ 连接</button>
       <button class="chip" data-toggle="showMesh" title="显示 Agent 实测的全部互联">✱ 实测网格</button>
       <button class="chip" data-toggle="showLinkLabels" title="在连线上显示延迟">ms 标签</button>

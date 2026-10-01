@@ -32,6 +32,39 @@ export function fmtBps(v) {
 
 export const fmtMbps = (v) => (v == null ? '—' : v >= 1000 ? `${+(v / 1000).toFixed(1)} Gbps` : `${Math.round(v)} Mbps`);
 
+export function fmtBytes(v) {
+  if (v == null) return '—';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  let i = 0;
+  while (v >= 1000 && i < u.length - 1) {
+    v /= 1000;
+    i++;
+  }
+  return `${v < 10 && i > 0 ? v.toFixed(2) : v < 100 && i > 0 ? v.toFixed(1) : Math.round(v)} ${u[i]}`;
+}
+
+/** 流量额度的简写，如 500 GB / 2 TB */
+export const fmtQuota = (tb) => (tb == null ? '—' : tb < 1 ? `${+(tb * 1000).toFixed(1)} GB` : `${+tb.toFixed(3)} TB`);
+
+/** 本地时间 M/D HH:mm（tz 为相对 UTC 的分钟数，不传则用浏览器时区） */
+export function fmtDT(ts, { tz = null, time = true, year = false } = {}) {
+  if (ts == null) return '—';
+  const d = tz == null ? new Date(ts) : new Date(ts + tz * 60_000);
+  const g = (k) => (tz == null ? d[`get${k}`]() : d[`getUTC${k}`]());
+  const p = (v) => String(v).padStart(2, '0');
+  return `${year ? g('FullYear') + '/' : ''}${g('Month') + 1}/${g('Date')}${time ? ` ${p(g('Hours'))}:${p(g('Minutes'))}` : ''}`;
+}
+
+export const tzLabel = (tz) => `UTC${tz >= 0 ? '+' : '-'}${Math.floor(Math.abs(tz) / 60)}${Math.abs(tz) % 60 ? ':' + String(Math.abs(tz) % 60).padStart(2, '0') : ''}`;
+
+export function fmtDuration(ms) {
+  if (ms == null) return '—';
+  const m = Math.max(0, Math.round(ms / 60_000));
+  const d = Math.floor(m / 1440);
+  const h = Math.floor((m % 1440) / 60);
+  return d ? `${d} 天 ${h} 小时` : h ? `${h} 小时 ${m % 60} 分` : `${m} 分钟`;
+}
+
 export function fmtBytesMB(mb) {
   if (mb == null) return '—';
   return mb >= 1024 ? `${+(mb / 1024).toFixed(1)} GB` : `${mb} MB`;

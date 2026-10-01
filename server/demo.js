@@ -1,6 +1,6 @@
 // 演示数据：特意在洛杉矶 / 东京 / 法兰克福放了多台，用来展示「同城多机」的放大展开效果。
 import { CITY_BY_KEY } from '../shared/cities.js';
-import { db, newId, newToken, normalizeServer, normalizeLink, save } from './store.js';
+import { db, newId, newToken, normalizeServer, normalizeLink, normalizeRoute, save } from './store.js';
 
 const DEMO_SERVERS = [
   ['LA-CN2-GIA-01', 'bandwagon', 'los-angeles', ['cn2', 'proxy'], 2, 2048, 40],
@@ -51,6 +51,12 @@ const DEMO_LINKS = [
   ['LON-Linode', 'JNB-Vultr', '', 200],
 ];
 
+// 线路模式的示例：本机经香港专线去法兰克福、经 CN2 GIA 去洛杉矶的普通机器
+const DEMO_ROUTES = [
+  [['HK-AliCloud'], 'FRA-Hetzner-1', '欧洲经香港', ['专线', 'IPLC']],
+  [['LA-CN2-GIA-01'], 'LA-Vultr-HP', '美西经 CN2', ['CN2 GIA', '同城内网']],
+];
+
 export function seedDemo() {
   const byName = {};
   let ipSeq = 10;
@@ -59,7 +65,7 @@ export function seedDemo() {
     const srv = normalizeServer({
       name, provider, tags, city: c.name, country: c.cc, lat: c.lat, lon: c.lon, demo: true,
       ip: `203.0.113.${ipSeq++}`, // RFC 5737 文档保留地址段，不会真的去探测
-      specs: { cpu, ramMB, diskGB, bandwidthMbps: 1000 },
+      specs: { cpu, ramMB, diskGB, bandwidthMbps: 1000, trafficTB: diskGB >= 200 ? 20 : diskGB >= 80 ? 4 : 1 },
       notes: '演示数据，可在「设置 → 清除演示数据」一键删除',
     });
     srv.id = newId('srv');
@@ -75,6 +81,13 @@ export function seedDemo() {
     l.demo = true;
     db.links.push(l);
   }
+  for (const [via, to, label, hopLabels] of DEMO_ROUTES) {
+    const r = normalizeRoute({ from: 'local', via: via.map((n) => byName[n]), to: byName[to], label, hopLabels });
+    r.id = newId('rte');
+    r.demo = true;
+    db.routes.push(r);
+  }
+  if (db.settings.origin?.lat == null) db.settings.origin = { name: '本机', note: '演示：假设 Hub 在上海', lat: 31.23, lon: 121.47 };
   save();
   return { servers: DEMO_SERVERS.length, links: DEMO_LINKS.length };
 }
@@ -83,6 +96,7 @@ export function clearDemo() {
   const ids = new Set(db.servers.filter((s) => s.demo).map((s) => s.id));
   db.servers = db.servers.filter((s) => !s.demo);
   db.links = db.links.filter((l) => !l.demo && !ids.has(l.a) && !ids.has(l.b));
+  db.routes = db.routes.filter((r) => !r.demo && !ids.has(r.to) && !r.via.some((v) => ids.has(v)) && !ids.has(r.from.slice(4)));
   save();
   return [...ids];
 }

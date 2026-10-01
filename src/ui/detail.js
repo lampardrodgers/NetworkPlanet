@@ -1,14 +1,18 @@
 // 右侧详情面板：服务器 / 站点（同城多台）/ 连线 三种视图，实时刷新。
-import { store, serverById, statusOf, edgesOf, measuredBetween, cityName, linkHistory } from '../state.js';
+import { store, serverById, statusOf, edgesOf, measuredBetween, cityName, linkHistory, bandwidthBetween, runningTask, targetsOf, alertsOf } from '../state.js';
 import { haversineKm, estimateRttMs } from '../../shared/cities.js';
 import {
-  statusKey, STATUS_TEXT, fmtMs, fmtPct, fmtBps, fmtBytesMB, fmtUptime, fmtAgo, fmtMbps, latencyColor, providerColor, esc,
+  statusKey, STATUS_TEXT, fmtMs, fmtPct, fmtBps, fmtBytes, fmtBytesMB, fmtDT, fmtDuration, fmtQuota, fmtUptime, fmtAgo, fmtMbps, latencyColor, providerColor, esc,
 } from '../format.js';
-import { $, sparkline, copyText } from './dom.js';
+import { $, sparkline, copyText, toast } from './dom.js';
 import { api } from '../api.js';
+import { agentState, hubUrl } from './probe.js';
+import { openHistory, drawCycleChart } from './history.js';
 
 let handlers = {};
 let historyCache = { id: null, points: [] };
+let targetCache = { id: null, data: {}, seen: {} };
+let cycleCache = { id: null, at: 0, data: null };
 
 export function initDetail(h) {
   handlers = h;
@@ -32,8 +36,47 @@ export function initDetail(h) {
       case 'copy': return copyText(a.dataset.text);
       case 'rotate-token': return handlers.onRotateToken?.(sel.id);
       case 'probe': return probeNow(sel.id, a);
+      case 'bw-test': return startBandwidth(a.dataset.a, a.dataset.b, a);
+      case 'bw-test-sel': {
+        const b = $('[data-bw-peer]', root)?.value;
+        return b ? startBandwidth(sel.id, b, a) : toast('先选择对端服务器', 'warn');
+      }
+      case 'calib': return calibrate(sel.id, a);
+      case 'history': return openHistory(sel.id, { range: a.dataset.range || 'cycle' });
+      case 'toggle-cmd': return $('.cmd-alt', root)?.classList.toggle('hidden');
     }
   });
+}
+
+async function startBandwidth(a, b, btn) {
+  btn.disabled = true;
+  try {
+    const r = await api('POST', '/api/bandwidth', { a, b });
+    if (r.id) store.tasks.set(r.id, r);
+    toast(r.queued ? `已排队（第 ${r.position} 个）` : '带宽测试已开始，约需 20~40 秒', 'ok');
+    updateLive();
+  } catch (e) {
+    toast(e.message, 'error', 6000);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function calibrate(id, btn) {
+  const input = $('[data-calib]', $('#detail'));
+  const v = Number(input?.value);
+  if (!input?.value || !Number.isFinite(v) || v < 0) return toast('请填写本周期已用流量（GB）', 'warn');
+  btn.disabled = true;
+  try {
+    await api('POST', `/api/servers/${id}/traffic`, { usedGB: v });
+    toast('已校准，几秒后刷新', 'ok');
+    cycleCache.at = 0;
+    input.value = '';
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function probeNow(id, btn) {
@@ -63,10 +106,12 @@ export async function renderDetail() {
     const s = serverById(sel.id);
     if (!s) return handlers.onClose?.();
     root.innerHTML = serverView(s);
+    cycleCache.at = 0; // 编辑 / 校准后周期或额度可能变了
     if (historyCache.id !== s.id) {
       historyCache = { id: s.id, points: [] };
+      targetCache = { id: s.id, data: {}, seen: {} };
       try {
-        historyCache.points = await api('GET', `/api/servers/${s.id}/history`);
+        [historyCache.points, targetCache.data] = await Promise.all([api('GET', `/api/servers/${s.id}/history`), api('GET', `/api/servers/${s.id}/targets`)]);
       } catch {}
       if (store.selection?.id !== s.id) return;
     }
@@ -103,7 +148,17 @@ export function updateLive() {
     if (peersEl) peersEl.innerHTML = peersBlock(s);
     const linksEl = $('.links-list', root);
     if (linksEl) linksEl.innerHTML = linksBlock(s);
+    for (const [sel2, fn] of [['.traffic', trafficBlock], ['.targets', targetsBlock], ['.bw', bwBlock], ['.bw-ctrl', bwCtrl], ['.agent-state', agentBlock], ['.alert-strip', alertStrip]]) {
+      const el = $(sel2, root);
+      if (el) {
+        const html = fn(s);
+        if (el._html !== html) el.innerHTML = el._html = html;
+      }
+    }
+    mergeTargetHistory(s.id);
+    drawMiniCycle(s);
     drawCharts(pts);
+    drawTargetChart();
   } else if (sel.type === 'site') {
     const body = $('.site-list', root);
     if (body) body.innerHTML = siteMembers(sel.id);
@@ -118,14 +173,14 @@ export function updateLive() {
 function serverView(s) {
   const st = statusOf(s.id);
   const sp = s.specs || {};
-  const hub = store.settings.publicUrl || location.origin;
+  const hub = hubUrl();
   const cmd = `curl -fsSL ${hub}/agent/install.sh | sudo NP_HUB=${hub} NP_ID=${s.id} NP_TOKEN=${s.agentToken} bash`;
   const specRows = [
     ['CPU', sp.cpu ? `${sp.cpu} 核` : null],
     ['内存', sp.ramMB ? fmtBytesMB(sp.ramMB) : null],
     ['磁盘', sp.diskGB ? `${sp.diskGB} GB` : null],
     ['端口带宽', sp.bandwidthMbps ? fmtMbps(sp.bandwidthMbps) : null],
-    ['月流量', sp.trafficTB ? `${sp.trafficTB} TB` : null],
+    ['流量额度', sp.trafficTB ? fmtQuota(sp.trafficTB) : null],
     ['套餐', sp.plan || null],
     ['系统', s.os || null],
     ['月费', s.monthlyCost != null ? `$${s.monthlyCost}` : null],
@@ -153,13 +208,31 @@ function serverView(s) {
       </div>
     </div>
     <div class="detail-body">
+      <div class="alert-strip">${alertStrip(s)}</div>
       <section class="live">${liveBlock(s, st)}</section>
       <section>
+        <h4>实时 <button class="btn xs" data-act="history" data-range="24h">📈 历史图表</button></h4>
         <div class="charts">
           <div class="chart"><label>Hub 延迟</label><canvas data-chart="hubRtt"></canvas></div>
-          <div class="chart"><label>CPU / 内存</label><canvas data-chart="cpu"></canvas></div>
-          <div class="chart"><label>网络 ↓↑</label><canvas data-chart="net"></canvas></div>
+          <div class="chart"><label>CPU <i style="color:#a78bfa">━</i> / 内存 <i style="color:#f472b6">━</i></label><canvas data-chart="cpu"></canvas></div>
+          <div class="chart"><label>网络 ↓ <i style="color:#34d399">━</i> ↑ <i style="color:#fbbf24">━</i></label><canvas data-chart="net"></canvas></div>
         </div>
+      </section>
+      <section>
+        <h4>本周期流量 <button class="btn xs" data-act="history" data-range="cycle">📊 按时间段查看</button></h4>
+        <div class="traffic">${trafficBlock(s)}</div>
+        <div class="tchart mini" data-c="mini-cycle"></div>
+        ${s.demo ? '' : `<div class="row-actions calib"><input class="input sm" data-calib type="number" min="0" step="any" placeholder="与服务商面板不一致？填本周期已用 GB" /><button class="btn xs" data-act="calib">校准</button></div>`}
+      </section>
+      <section>
+        <h4>三网 / 检测目标 <span class="hint">Agent 每 ${store.settings.probe?.targets?.intervalSec ?? 60}s 测一次</span></h4>
+        <div class="targets">${targetsBlock(s)}</div>
+        <div class="chart"><canvas data-chart="targets" style="height:70px"></canvas></div>
+      </section>
+      <section>
+        <h4>带宽测试 <span class="hint">iperf3，需两端都装 Agent</span></h4>
+        <div class="bw">${bwBlock(s)}</div>
+        <div class="bw-ctrl">${bwCtrl(s)}</div>
       </section>
       <section>
         <h4>连接 <button class="btn xs" data-act="add-link">＋ 添加</button></h4>
@@ -172,14 +245,18 @@ function serverView(s) {
       ${specRows.length ? `<section><h4>配置</h4><div class="kv">${specRows.map(([k, v]) => `<span>${k}</span><b>${esc(v)}</b>`).join('')}</div></section>` : ''}
       ${s.tags?.length || s.notes ? `<section><h4>标签 / 备注</h4>${s.tags?.length ? `<div class="tags">${s.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}${s.notes ? `<p class="notes">${esc(s.notes)}</p>` : ''}</section>` : ''}
       <section>
-        <h4>Agent 安装 <span class="hint">在该 VPS 上以 root 执行</span></h4>
-        ${s.demo ? '<p class="hint">演示服务器的数据为模拟生成，无需安装。</p>' : `
-        <pre class="cmd">${esc(cmd)}</pre>
+        <h4>Agent</h4>
+        <div class="agent-state">${agentBlock(s)}</div>
+        ${s.demo ? '' : `
+        <p class="hint">推荐用顶栏「⤓ 安装探针」里的通用命令（所有 VPS 同一条，按 IP 自动认领这台）。也可以用这台专属的命令：</p>
         <div class="row-actions">
-          <button class="btn xs" data-act="copy" data-text="${esc(cmd)}">复制命令</button>
+          <button class="btn xs" data-act="toggle-cmd">显示专属命令</button>
           <button class="btn xs" data-act="rotate-token">重置 Token</button>
         </div>
-        <p class="hint">Agent 每 10 秒上报 CPU/内存/磁盘/网速，每 60 秒 ping 其它服务器生成互联延迟。Hub 地址可在 ⚙ 设置中修改（需能被 VPS 访问）。</p>`}
+        <div class="cmd-alt hidden">
+          <pre class="cmd">${esc(cmd)}</pre>
+          <button class="btn xs" data-act="copy" data-text="${esc(cmd)}">复制命令</button>
+        </div>`}
       </section>
     </div>`;
 }
@@ -190,17 +267,154 @@ function liveBlock(s, st) {
   const cells = [
     ['状态', `<span class="st ${key}">${STATUS_TEXT[key]}</span>`],
     ['Hub 延迟', `<span style="color:${latencyColor(st?.hubRtt)}">${fmtMs(st?.hubRtt)}</span>`],
-    ['CPU', meter(ag?.cpu)],
-    ['内存', meter(ag?.mem)],
-    ['磁盘', meter(ag?.disk)],
-    ['负载', ag?.load1 ?? '—'],
+    ['运行', fmtUptime(ag?.uptimeSec)],
+    [`CPU${ag?.cores ? ` · ${ag.cores}核` : ''}`, meter(ag?.cpu)],
+    [`内存${ag?.memTotalMB ? ` · ${fmtBytesMB(ag.memTotalMB)}` : ''}`, meter(ag?.mem)],
+    [`磁盘${ag?.diskTotalGB ? ` · ${Math.round(ag.diskTotalGB)}G` : ''}`, meter(ag?.disk)],
     ['下行 ↓', fmtBps(ag?.rxBps)],
     ['上行 ↑', fmtBps(ag?.txBps)],
-    ['运行', fmtUptime(ag?.uptimeSec)],
+    ['Swap', ag?.swap == null ? '—' : meter(ag.swap)],
+    ['负载', ag?.load1 == null ? '—' : `${ag.load1}${ag.load5 != null ? ` <span class="muted">${ag.load5} ${ag.load15}</span>` : ''}`],
+    ['TCP 连接', ag?.conns ?? '—'],
+    ['进程', ag?.procs ?? '—'],
   ];
   return `
     <div class="metrics">${cells.map(([k, v]) => `<div class="metric"><label>${k}</label><div>${v}</div></div>`).join('')}</div>
-    <div class="hint">Agent：${ag ? `${fmtAgo(st.lastSeen)} · ${esc(ag.hostname || '')} ${esc(ag.kernel || '')}` : '未安装或未上报'} · 探测端口 ${s.probePort || 22}：${fmtAgo(st?.lastProbe)}</div>`;
+    <div class="hint">探测端口 ${s.probePort || 22}：${fmtAgo(st?.lastProbe)}${ag ? ` · Agent 上报：${fmtAgo(st.lastSeen)}` : ''}</div>`;
+}
+
+function alertStrip(s) {
+  const list = alertsOf(s.id);
+  return list.length ? `<div class="warn-box">⚠ ${list.map((a) => esc(a.ruleName)).join('、')}</div>` : '';
+}
+
+function agentBlock(s) {
+  const st = statusOf(s.id);
+  const ag = st?.agent;
+  const a = agentState(s);
+  if (!ag) return `<p class="hint">${a.key === 'stale' ? `<span class="ag stale">${esc(a.text)}</span>` : s.demo ? '演示服务器的数据为模拟生成。' : '未安装。装上后可以看到 CPU / 网速 / 流量 / 三网延迟 / 带宽测试。'}</p>`;
+  const rows = [
+    ['版本', `<span class="ag ${a.key}">${esc(a.text)}</span>${a.key === 'old' ? ' <span class="hint">重新运行安装命令即可升级</span>' : ''}`],
+    ['系统', `${esc(ag.os || '')} ${esc(ag.arch || '')}`],
+    ['内核', esc(ag.kernel || '')],
+    ['主机名', esc(ag.hostname || '')],
+    ['iperf3', ag.iperf ? '已安装' : '<span class="muted">未安装（带宽测试不可用）</span>'],
+    ['指令通道', s.demo ? '—' : st.poll ? '<span style="color:var(--ok)">已连接</span>' : '<span class="muted">未连接</span>'],
+  ];
+  return `<div class="kv">${rows.map(([k, v]) => `<span>${k}</span><b>${v}</b>`).join('')}</div>`;
+}
+
+function trafficBlock(s) {
+  const tr = statusOf(s.id)?.traffic;
+  if (!tr) return `<p class="hint">${s.demo ? '' : '装上 Agent 后自动统计。重置时间、额度和计费方式在「编辑」里按这台机器单独设置。'}</p>`;
+  const MODE = { sum: '双向合计', out: '只算出站', in: '只算入站', max: '取较大方向' };
+  const pct = tr.pct;
+  const c = pct == null ? 'var(--accent)' : pct >= 90 ? 'var(--lat-bad)' : pct >= 75 ? 'var(--lat-warn)' : 'var(--accent)';
+  const over = tr.limit && tr.projected && tr.projected > tr.limit;
+  return `
+    <div class="traffic-main">
+      <b>${fmtBytes(tr.used)}</b>${tr.limit ? ` <span class="muted">/ ${fmtBytes(tr.limit)}</span> <span style="color:${c}">${pct}%</span>` : ' <span class="muted">（未设置流量额度）</span>'}
+    </div>
+    ${tr.limit ? `<div class="tbar"><i style="width:${Math.min(100, pct)}%;background:${c}"></i>${tr.nextReset ? `<em style="left:${Math.min(100, ((Date.now() - tr.cycleStart) / (tr.nextReset - tr.cycleStart)) * 100)}%" title="周期已过去的比例"></em>` : ''}</div>` : ''}
+    <div class="hint">↓ ${fmtBytes(tr.rx)} · ↑ ${fmtBytes(tr.tx)} · ${MODE[tr.mode] || tr.mode}</div>
+    <div class="hint">${fmtDT(tr.cycleStart)} → ${tr.nextReset ? `${fmtDT(tr.nextReset)}（还剩 ${fmtDuration(tr.nextReset - Date.now())}）` : '不重置'}${tr.cycleInherit ? '' : ' · 单独设置'}</div>
+    ${tr.dailyAvg != null ? `<div class="hint">日均 ${fmtBytes(tr.dailyAvg)}${tr.projected ? ` · 预计周期末 <span style="color:${over ? 'var(--lat-bad)' : 'inherit'}">${fmtBytes(tr.projected)}${over ? ' ⚠ 会超额' : ''}</span>` : ''}</div>` : ''}
+`;
+}
+
+/** 详情里的周期累计小图：选中时拉一次，之后每 5 分钟刷新 */
+async function drawMiniCycle(s) {
+  const el = $('#detail [data-c=mini-cycle]');
+  if (!el) return;
+  const tr = statusOf(s.id)?.traffic;
+  if (!tr) return el.classList.add('hidden');
+  el.classList.remove('hidden');
+  if (cycleCache.id === s.id && Date.now() - cycleCache.at < 300_000) {
+    if (!el.querySelector('canvas') && cycleCache.data) drawCycleChart(el, s.id, cycleCache.data.cycles[0], cycleCache.data.mode, { compact: true }).catch(() => {});
+    return;
+  }
+  cycleCache = { id: s.id, at: Date.now(), data: null };
+  try {
+    const data = await api('GET', `/api/servers/${s.id}/cycles?n=1`);
+    if (store.selection?.id !== s.id || !data.cycles[0]) return;
+    cycleCache.data = data;
+    await drawCycleChart(el, s.id, data.cycles[0], data.mode, { compact: true });
+  } catch {}
+}
+
+const GROUP_COLORS = { 电信: '#38bdf8', 联通: '#fb923c', 移动: '#34d399', 公共: '#a78bfa' };
+const groupColor = (g) => GROUP_COLORS[g] || '#94a3b8';
+
+function targetsBlock(s) {
+  const res = targetsOf(s.id);
+  const targets = (store.settings.targets || []).filter((t) => t.enabled);
+  if (!targets.length) return '<p class="hint">没有启用的检测目标（⚙ 设置 →「检测目标」）。</p>';
+  if (!Object.keys(res).length) return `<p class="hint">${s.demo ? '等待数据…' : '还没有数据。装上 Agent 并在设置里开启「检测目标」后，会自动测到三网的延迟。'}</p>`;
+  const max = Math.max(1, ...targets.map((t) => res[t.id]?.rtt || 0));
+  return targets
+    .map((t) => {
+      const r = res[t.id];
+      const down = r && r.rtt == null;
+      return `<div class="peer-row tgt">
+        <span class="pn" title="${esc(t.host)}"><i class="gdot" style="background:${groupColor(t.group)}"></i>${esc(t.name)}</span>
+        <span class="bar"><i style="width:${!r ? 0 : down ? 100 : (r.rtt / max) * 100}%;background:${down ? 'var(--lat-bad)' : latencyColor(r?.rtt)}"></i></span>
+        <span class="pv">${!r ? '<span class="muted">—</span>' : down ? '<span class="bad">不通</span>' : fmtMs(r.rtt)}${r?.loss ? ` <span class="bad">${Math.round(r.loss)}%</span>` : ''}</span>
+      </div>`;
+    })
+    .join('');
+}
+
+function bwBlock(s) {
+  const results = (store.status.bandwidth || []).filter((r) => r.a === s.id || r.b === s.id);
+  const rows = results
+    .sort((x, y) => y.ts - x.ts)
+    .map((r) => {
+      const other = r.a === s.id ? r.b : r.a;
+      const bw = bandwidthBetween(s.id, other);
+      const o = serverById(other);
+      return `<div class="bw-row" data-act="select-server" data-id="${other}"><span class="pn">${esc(o?.name || other)}</span>
+        <span class="mono">↑ ${fmtMbps(bw.up)}</span><span class="mono">↓ ${fmtMbps(bw.down)}</span><span class="muted">${fmtAgo(bw.ts)}</span></div>`;
+    })
+    .join('');
+  return rows || '<p class="hint">还没有测试结果。↑ 为本机发往对端，↓ 为对端发往本机。</p>';
+}
+
+function bwCtrl(s) {
+  const running = runningTask(s.id);
+  const peers = store.servers.filter((o) => o.id !== s.id && !o.demo && statusOf(o.id)?.agent);
+  const linked = new Set(store.links.filter((l) => l.a === s.id || l.b === s.id).map((l) => (l.a === s.id ? l.b : l.a)));
+  peers.sort((x, y) => linked.has(y.id) - linked.has(x.id) || x.name.localeCompare(y.name));
+  return s.demo
+    ? ''
+    : running
+      ? `<div class="loading-inline"><div class="spinner sm"></div>正在测试 ${esc(running.aName)} ⇄ ${esc(running.bName)}…</div>`
+      : peers.length
+        ? `<div class="row-actions"><select class="input sm" data-bw-peer style="flex:1">${peers.map((o) => `<option value="${o.id}">${linked.has(o.id) ? '⇄ ' : ''}${esc(o.name)} · ${esc(cityName(o.city))}</option>`).join('')}</select>
+           <button class="btn xs primary" data-act="bw-test-sel">测速</button></div>`
+        : '<p class="hint">需要至少另一台装了 Agent 的服务器。</p>';
+}
+
+/** 把 SSE 推来的最新目标结果并入本地历史，用于折线图 */
+function mergeTargetHistory(id) {
+  if (targetCache.id !== id) return;
+  for (const [tid, r] of Object.entries(targetsOf(id))) {
+    if (targetCache.seen[tid] === r.ts) continue;
+    targetCache.seen[tid] = r.ts;
+    const arr = (targetCache.data[tid] ||= []);
+    if (!arr.length || arr[arr.length - 1].t < r.ts) arr.push({ t: r.ts, rtt: r.rtt, loss: r.loss });
+    if (arr.length > 120) arr.shift();
+  }
+}
+
+function drawTargetChart() {
+  const c = $('#detail [data-chart=targets]');
+  if (!c) return;
+  const targets = (store.settings.targets || []).filter((t) => t.enabled && targetCache.data[t.id]?.length);
+  const series = targets.map((t) => ({ color: groupColor(t.group), values: targetCache.data[t.id].slice(-60).map((p) => p.rtt) }));
+  if (!series.length) return sparkline(c, [], {});
+  const max = Math.max(1, ...series.flatMap((x) => x.values.filter((v) => v != null))) * 1.1;
+  sparkline(c, series[0].values, { color: series[0].color, max, fill: false });
+  for (const x of series.slice(1)) overlay(c, x.values, x.color, max);
 }
 
 function meter(v) {
@@ -362,10 +576,22 @@ function linkLive(key) {
     ['延迟 RTT', m ? `<span style="color:${latencyColor(m.rtt)}">${m.rtt == null ? '中断' : fmtMs(m.rtt)}</span>` : '<span class="muted">无实测</span>'],
     ['丢包', m ? `<span class="${m.loss ? 'bad' : ''}">${m.loss == null ? '—' : m.loss.toFixed(1) + '%'}</span>` : '—'],
     ['抖动', m?.jitter != null ? fmtMs(m.jitter) : '—'],
-    ['吞吐', m?.mbps != null ? fmtMbps(m.mbps) : link?.bandwidthMbps ? `${fmtMbps(link.bandwidthMbps)}（标称）` : '—'],
+    ['标称带宽', link?.bandwidthMbps ? fmtMbps(link.bandwidthMbps) : '—'],
   ];
+  const bw = bandwidthBetween(a, b);
+  const sa = serverById(a);
+  const sb = serverById(b);
+  const running = runningTask(a, b);
+  const demo = sa?.demo || sb?.demo;
   return `<div class="metrics four">${cells.map(([k, v]) => `<div class="metric"><label>${k}</label><div>${v}</div></div>`).join('')}</div>
-    <div class="hint">${m ? `更新于 ${fmtAgo(m.ts)}` : '两端都安装 Agent 后会自动测量；当前颜色/数值为按距离估算。'}</div>`;
+    <div class="hint">${m ? `延迟更新于 ${fmtAgo(m.ts)}` : '两端都安装 Agent 后会自动测量；当前颜色/数值为按距离估算。'}</div>
+    <h4 style="margin-top:12px">实测带宽 <span class="hint">iperf3</span></h4>
+    ${bw ? `<div class="metrics four">
+        <div class="metric"><label>${esc(sa?.name)} → ${esc(sb?.name)}</label><div>${fmtMbps(bw.up)}</div></div>
+        <div class="metric"><label>${esc(sb?.name)} → ${esc(sa?.name)}</label><div>${fmtMbps(bw.down)}</div></div>
+      </div><div class="hint">测于 ${fmtAgo(bw.ts)}</div>` : '<p class="hint">还没有测过。</p>'}
+    ${demo ? '' : running ? `<div class="loading-inline"><div class="spinner sm"></div>测试中…（约 ${(store.settings.probe?.bandwidth?.durationSec || 5) * 2 + 10} 秒）</div>`
+      : `<div class="row-actions"><button class="btn xs primary" data-act="bw-test" data-a="${a}" data-b="${b}">${bw ? '重新测速' : '开始测速'}</button><span class="hint">会消耗两端流量</span></div>`}`;
 }
 
 function drawLinkChart(key) {

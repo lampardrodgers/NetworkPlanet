@@ -37,11 +37,13 @@ export async function api(method, path, body) {
 }
 
 /** 订阅实时推送；断线自动重连（EventSource 自带） */
-export function subscribe({ onStatus, onChanged, onOpen, onError }) {
+export function subscribe({ onStatus, onChanged, onOpen, onError, onTask, onAlert }) {
   const tok = getToken();
   const es = new EventSource(`/api/stream${tok ? `?token=${encodeURIComponent(tok)}` : ''}`);
   es.addEventListener('status', (e) => onStatus?.(JSON.parse(e.data)));
   es.addEventListener('changed', (e) => onChanged?.(JSON.parse(e.data)));
+  es.addEventListener('task', (e) => onTask?.(JSON.parse(e.data)));
+  es.addEventListener('alert', (e) => onAlert?.(JSON.parse(e.data)));
   es.onopen = () => onOpen?.();
   es.onerror = () => onError?.();
   return () => es.close();

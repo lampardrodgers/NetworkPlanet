@@ -4,8 +4,17 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, save, flush, newId, newToken, normalizeServer, normalizeLink } from './store.js';
-import { startMonitor, snapshot, ingestAgent, history, forget, tcpPing } from './monitor.js';
+import { db, save, flush, newId, newToken, normalizeServer, normalizeLink, normalizeRoute } from './store.js';
+import net from 'node:net';
+import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { startMonitor, snapshot, ingestAgent, history, forget, tcpPing, targetHistory } from './monitor.js';
+import { normalizeProbe, normalizeTargets, normalizeAlerts, effectiveProbe, safeHost, newEnrollKey, DEFAULT_TARGETS, normalizeOrigin } from './config.js';
+import { holdPoll, refreshAgents, requestBandwidth, taskReport, listTasks, onTaskUpdate, agentConnected } from './agentbus.js';
+import { startAlerts, onAlertEvent, activeAlerts } from './alerts.js';
+import { notify } from './notify.js';
+import { calibrateTraffic, trafficCycles } from './traffic.js';
+import { startHistory, flushHistory, query as queryHistory } from './history.js';
 import { PROVIDERS, providerMeta } from './providers/index.js';
 import { cityFromRegion } from './regions.js';
 import { findCity } from '../shared/cities.js';
@@ -17,6 +26,8 @@ const PORT = Number(process.env.PORT || 50000);
 const HOST = process.env.HOST || '0.0.0.0';
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const IS_PROD = process.env.NODE_ENV === 'production';
+// 当前 Agent 版本（从脚本里读），前端据此提示「需要升级」
+const AGENT_VERSION = (fs.readFileSync(path.join(ROOT, 'agent', 'np-agent.sh'), 'utf8').match(/^VERSION="([^"]+)"/m) || [])[1] || '';
 
 // 首次启动且库为空时自动灌入演示数据（NP_DEMO=0 关闭）
 if (process.env.NP_DEMO !== '0' && db.servers.length === 0 && !db.settings.demoSeededOnce) {
@@ -75,16 +86,34 @@ function publicAccount(a) {
   return { id: a.id, provider: a.provider, label: a.label, credentials: creds, lastSync: a.lastSync || null, lastError: a.lastError || null, count: a.count ?? null };
 }
 
+/** settings 里的密钥打码；注册密钥只通过 /api/enroll 单独获取 */
+function publicSettings() {
+  const s = structuredClone(db.settings);
+  s.enroll = { enabled: s.enroll.enabled };
+  s.alerts.channels.telegram.botToken = mask(s.alerts.channels.telegram.botToken);
+  s.alerts.channels.webhook.url = mask(s.alerts.channels.webhook.url);
+  return s;
+}
+
 function publicState() {
   return {
     servers: db.servers,
     links: db.links,
+    routes: db.routes,
     accounts: db.accounts.map(publicAccount),
     providers: providerMeta(),
-    settings: db.settings,
+    settings: publicSettings(),
+    agentVersion: AGENT_VERSION,
+    hubTz: -new Date().getTimezoneOffset(), // 全局流量周期按 Hub 时区算
     authRequired: Boolean(ADMIN_TOKEN),
   };
 }
+
+const statusPayload = () => {
+  const snap = snapshot();
+  for (const id of Object.keys(snap.servers)) snap.servers[id].poll = agentConnected(id);
+  return { ...snap, alerts: activeAlerts() };
+};
 
 /** 统一的定位逻辑：显式坐标 > 供应商 region > 城市名 > IP 地理定位 */
 async function resolveLocation(item, provider, { allowGeoip = true } = {}) {
@@ -110,7 +139,9 @@ function broadcast(event, data) {
   for (const res of clients) res.write(msg);
 }
 const changed = (what) => broadcast('changed', { what, ts: Date.now() });
-setInterval(() => clients.size && broadcast('status', snapshot()), 3000);
+setInterval(() => clients.size && broadcast('status', statusPayload()), 3000);
+onTaskUpdate((t) => broadcast('task', t));
+onAlertEvent((ev) => broadcast('alert', ev));
 setInterval(() => {
   for (const res of clients) res.write(': ping\n\n');
 }, 25000);
@@ -130,11 +161,11 @@ const findServer = (id) => {
 };
 
 route('GET', '/api/state', () => publicState());
-route('GET', '/api/status', () => snapshot());
+route('GET', '/api/status', () => statusPayload());
 
 route('GET', '/api/stream', (req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-  res.write(`event: status\ndata: ${JSON.stringify(snapshot())}\n\n`);
+  res.write(`event: status\ndata: ${JSON.stringify(statusPayload())}\n\n`);
   clients.add(res);
   req.on('close', () => clients.delete(res));
   return undefined; // 保持连接
@@ -170,6 +201,7 @@ route('PUT', '/api/servers/:id', async (req, res, { params, body }) => {
   Object.assign(old, next);
   save();
   changed('servers');
+  if (body.probe !== undefined) refreshAgents([old.id]);
   return old;
 });
 
@@ -177,6 +209,7 @@ route('DELETE', '/api/servers/:id', (req, res, { params }) => {
   findServer(params.id);
   db.servers = db.servers.filter((s) => s.id !== params.id);
   db.links = db.links.filter((l) => l.a !== params.id && l.b !== params.id);
+  db.routes = db.routes.filter((r) => r.to !== params.id && r.from !== `srv:${params.id}` && !r.via.includes(params.id));
   forget(params.id);
   save();
   changed('servers');
@@ -191,6 +224,34 @@ route('POST', '/api/servers/:id/rotate-token', (req, res, { params }) => {
 });
 
 route('GET', '/api/servers/:id/history', (req, res, { params }) => history(params.id));
+route('GET', '/api/servers/:id/targets', (req, res, { params }) => targetHistory(params.id));
+
+// 校准本周期已用流量（GB）
+route('POST', '/api/servers/:id/traffic', (req, res, { params, body }) => {
+  const s = findServer(params.id);
+  const gb = Number(body.usedGB);
+  if (!Number.isFinite(gb) || gb < 0) throw new HttpError(400, '请填写已用流量（GB）');
+  calibrateTraffic(s, gb * 1e9, effectiveProbe(db.settings, s).traffic);
+  return { ok: true };
+});
+
+// 长期历史（图表）：from / to 毫秒时间戳，step 300 / 3600 / 86400 秒，tz 为浏览器时区（相对 UTC 的分钟数，按天汇总时切日用）
+route('GET', '/api/servers/:id/metrics', (req, res, { params, url }) => {
+  findServer(params.id);
+  const q = (k, d) => (url.searchParams.has(k) && Number.isFinite(Number(url.searchParams.get(k))) ? Number(url.searchParams.get(k)) : d);
+  const to = Math.min(q('to', Date.now()), Date.now());
+  const from = Math.max(q('from', to - 86_400_000), to - 400 * 86_400_000);
+  if (!(to > from)) throw new HttpError(400, '时间范围不对');
+  const step = q('step', to - from <= 2 * 86_400_000 ? 300 : to - from <= 45 * 86_400_000 ? 3600 : 86400);
+  return queryHistory(params.id, { from, to, step, tz: Math.max(-720, Math.min(840, q('tz', 0))) });
+});
+
+// 历史流量周期（当前周期在最前）
+route('GET', '/api/servers/:id/cycles', (req, res, { params, url }) => {
+  const s = findServer(params.id);
+  const n = Math.max(1, Math.min(36, Number(url.searchParams.get('n')) || 12));
+  return trafficCycles(s, effectiveProbe(db.settings, s).traffic, n);
+});
 
 route('POST', '/api/servers/:id/probe', async (req, res, { params }) => {
   const s = findServer(params.id);
@@ -240,8 +301,9 @@ route('POST', '/api/import', async (req, res, { body }) => {
 
 route('GET', '/api/export', () => ({
   exportedAt: new Date().toISOString(),
-  servers: db.servers.map(({ agentToken, ...s }) => s),
+  servers: db.servers.map(({ agentToken, machineId, ...s }) => s),
   links: db.links,
+  routes: db.routes,
 }));
 
 // ---- 连接 ----
@@ -269,6 +331,44 @@ route('DELETE', '/api/links/:id', (req, res, { params }) => {
   db.links = db.links.filter((x) => x.id !== params.id);
   save();
   changed('links');
+  return { ok: true };
+});
+
+// ---- 线路（线路模式：起点 → 中转 → 终点） ----
+function checkRoute(r) {
+  if (!r.from || !r.to) throw new HttpError(400, '需要起点和终点');
+  findServer(r.to);
+  for (const v of r.via) findServer(v);
+  if (r.from.startsWith('srv:')) findServer(r.from.slice(4));
+  if (r.from.startsWith('tgt:') && !db.settings.targets.some((t) => `tgt:${t.id}` === r.from)) throw new HttpError(400, '检测目标不存在');
+  const chain = [r.from.startsWith('srv:') ? r.from.slice(4) : null, ...r.via, r.to].filter(Boolean);
+  if (new Set(chain).size !== chain.length) throw new HttpError(400, '线路里有重复的服务器');
+}
+route('POST', '/api/routes', (req, res, { body }) => {
+  const r = normalizeRoute(body);
+  checkRoute(r);
+  // 同一起点到同一终点只保留一条，新的覆盖旧的
+  db.routes = db.routes.filter((x) => !(x.from === r.from && x.to === r.to));
+  r.id = newId('rte');
+  db.routes.push(r);
+  save();
+  changed('routes');
+  return r;
+});
+route('PUT', '/api/routes/:id', (req, res, { params, body }) => {
+  const r = db.routes.find((x) => x.id === params.id);
+  if (!r) throw new HttpError(404, '线路不存在');
+  const next = normalizeRoute(body, r);
+  checkRoute(next);
+  Object.assign(r, next);
+  save();
+  changed('routes');
+  return r;
+});
+route('DELETE', '/api/routes/:id', (req, res, { params }) => {
+  db.routes = db.routes.filter((x) => x.id !== params.id);
+  save();
+  changed('routes');
   return { ok: true };
 });
 
@@ -380,11 +480,62 @@ route('GET', '/api/geoip', async (req, res, { url }) => {
 });
 
 route('PUT', '/api/settings', (req, res, { body }) => {
-  const allowed = ['showMeasuredMesh', 'probeIntervalSec', 'publicUrl'];
-  for (const k of allowed) if (body[k] !== undefined) db.settings[k] = body[k];
+  if (body.showMeasuredMesh !== undefined) db.settings.showMeasuredMesh = Boolean(body.showMeasuredMesh);
+  if (body.probeIntervalSec !== undefined) db.settings.probeIntervalSec = Math.min(600, Math.max(5, Number(body.probeIntervalSec) || 15));
+  if (body.publicUrl !== undefined) {
+    const u = String(body.publicUrl || '').trim().replace(/\/+$/, '');
+    if (u && !/^https?:\/\/[^\s'"`$\\]+$/.test(u)) throw new HttpError(400, 'Hub 公网地址格式不对，应类似 https://planet.example.com');
+    db.settings.publicUrl = u;
+  }
+  let agentsAffected = false;
+  if (body.probe !== undefined) {
+    db.settings.probe = normalizeProbe(body.probe, db.settings.probe);
+    agentsAffected = true;
+  }
+  if (body.targets !== undefined) {
+    db.settings.targets = body.targets === 'default' ? DEFAULT_TARGETS() : normalizeTargets(body.targets);
+    agentsAffected = true;
+  }
+  if (body.alerts !== undefined) db.settings.alerts = normalizeAlerts(body.alerts, db.settings.alerts);
+  if (body.origin !== undefined) db.settings.origin = normalizeOrigin(body.origin);
+  if (body.enroll?.enabled !== undefined) db.settings.enroll.enabled = Boolean(body.enroll.enabled);
   save();
   changed('settings');
-  return db.settings;
+  if (agentsAffected) refreshAgents();
+  return publicSettings();
+});
+
+// ---- 一键安装 / 自动注册 ----
+route('GET', '/api/enroll', () => ({ ...db.settings.enroll, agentVersion: AGENT_VERSION }));
+route('POST', '/api/enroll/rotate', () => {
+  db.settings.enroll.key = newEnrollKey();
+  save();
+  return db.settings.enroll;
+});
+
+// ---- 带宽测试 ----
+route('POST', '/api/bandwidth', (req, res, { body }) => {
+  try {
+    return requestBandwidth(String(body.a || ''), String(body.b || ''));
+  } catch (e) {
+    throw new HttpError(409, e.message);
+  }
+});
+route('GET', '/api/bandwidth/tasks', () => listTasks());
+
+// ---- 告警 ----
+route('GET', '/api/events', () => [...db.events].reverse());
+route('DELETE', '/api/events', () => {
+  db.events = [];
+  save();
+  return { ok: true };
+});
+route('POST', '/api/alerts/test', async () => {
+  const ch = db.settings.alerts.channels;
+  if (!(ch.telegram.enabled && ch.telegram.botToken && ch.telegram.chatId) && !(ch.webhook.enabled && ch.webhook.url)) {
+    throw new HttpError(400, '还没有启用任何通知渠道');
+  }
+  return notify(ch, '🔔 Network Planet 测试通知', `如果你看到这条消息，说明告警通知配置正确。\n${new Date().toLocaleString('zh-CN', { hour12: false })}`);
 });
 
 route('POST', '/api/demo', () => {
@@ -404,27 +555,159 @@ function agentAuth(req, url, body) {
   const id = body?.id || url.searchParams.get('id');
   const token = req.headers['x-np-token'] || body?.token || url.searchParams.get('token');
   const s = db.servers.find((x) => x.id === id);
-  if (!s || !token || s.agentToken !== token) throw new HttpError(401, 'agent 认证失败');
+  if (!s || !token || !safeEqual(s.agentToken, token)) throw new HttpError(401, 'agent 认证失败');
   return s;
 }
+
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a || ''));
+  const y = Buffer.from(String(b || ''));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+
+const text = (res, body, status = 200) => {
+  res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(body);
+};
+
+/** 请求方的公网 IP（经反向代理时取 X-Forwarded-For 第一个） */
+function clientIp(req) {
+  const xf = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return (xf || req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+}
+
+function isPublicIp(ip) {
+  const v = net.isIP(ip);
+  if (v === 4) {
+    const [a, b] = ip.split('.').map(Number);
+    return !(a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224);
+  }
+  if (v === 6) return !/^(::1?$|fe[89ab]|f[cd]|::ffff:)/i.test(ip);
+  return false;
+}
+
+/**
+ * 下发给 Agent 的配置（纯文本，每行「类型 参数…」，方便 bash 用 read 解析）。
+ * 第一行 v <hash>：Agent 带着 hash 上报，配置没变时只回 same，省流量。
+ */
+function agentDirectives(srv) {
+  const c = effectiveProbe(db.settings, srv);
+  const b = (v) => (v ? 1 : 0);
+  const lines = [
+    `cfg interval ${c.intervalSec}`,
+    `cfg peers ${b(c.peers.enabled)}`,
+    `cfg peer_interval ${c.peers.intervalSec}`,
+    `cfg peer_method ${c.peers.method}`,
+    `cfg peer_count ${c.peers.count}`,
+    `cfg targets ${b(c.targets.enabled)}`,
+    `cfg target_interval ${c.targets.intervalSec}`,
+    `cfg target_count ${c.targets.count}`,
+    `cfg traffic ${b(c.traffic.enabled)}`,
+    `cfg bandwidth ${b(c.bandwidth.enabled)}`,
+  ];
+  if (c.peers.enabled) {
+    for (const o of db.servers) {
+      const host = safeHost(o.host || o.ip);
+      if (o.id === srv.id || o.demo || !host) continue;
+      lines.push(`peer ${o.id} ${host} ${Number(o.probePort) || 22}`);
+    }
+  }
+  if (c.targets.enabled) {
+    for (const t of db.settings.targets) if (t.enabled) lines.push(`target ${t.id} ${t.method} ${t.host} ${t.port || 0}`);
+  }
+  const hash = crypto.createHash('sha1').update(lines.join('\n')).digest('hex').slice(0, 10);
+  return { hash, text: `v ${hash}\n${lines.join('\n')}\n` };
+}
+
+// 一条命令通装：用注册密钥换取这台机器的 id / token
+route(
+  'POST',
+  '/api/agent/register',
+  async (req, res, { body }) => {
+    const en = db.settings.enroll;
+    if (!en.enabled) throw new HttpError(403, '自动注册已关闭（在「安装探针」里开启）');
+    if (!safeEqual(en.key, body.key)) throw new HttpError(401, '注册密钥错误');
+    const str = (v, n = 80) => (v == null ? '' : String(v).trim().slice(0, n));
+    const machineId = /^[a-f0-9]{16,64}$/.test(body.machineId || '') ? body.machineId : '';
+    const remote = clientIp(req);
+    const ips = [remote, ...(Array.isArray(body.ips) ? body.ips : [])].map((x) => str(x, 45)).filter((x) => net.isIP(x) && isPublicIp(x));
+    const pubIp = ips[0] || '';
+
+    // 1) 同一台机器重装：按 machine-id；2) 已经通过 API / 手动加过：按 IP 认领
+    let srv = (machineId && db.servers.find((s) => !s.demo && s.machineId === machineId)) || db.servers.find((s) => !s.demo && !s.machineId && s.ip && ips.includes(s.ip));
+    const specs = { cpu: Number(body.cores) || null, ramMB: Number(body.ramMB) || null, diskGB: Number(body.diskGB) || null };
+    let created = false;
+    if (!srv) {
+      srv = normalizeServer({
+        name: str(body.name) || str(body.hostname) || pubIp || '新服务器',
+        ip: pubIp,
+        tags: str(body.tags, 200),
+        os: str(body.os),
+        provider: str(body.provider, 40),
+        specs,
+      });
+      const loc = await resolveLocation({ ...srv, city: str(body.city) }, srv.provider);
+      if (!loc) throw new HttpError(400, `无法确定位置（公网 IP：${pubIp || '未知'}）。请在安装命令里加上 NP_CITY="Los Angeles" 这样的城市名`);
+      Object.assign(srv, loc, { id: newId('srv'), agentToken: newToken(), createdAt: Date.now(), source: 'agent' });
+      db.servers.push(srv);
+      created = true;
+    } else {
+      // 只补空缺字段，不覆盖用户 / 供应商 API 填过的
+      srv.os ||= str(body.os);
+      srv.ip ||= pubIp;
+      srv.specs = { ...specs, ...Object.fromEntries(Object.entries(srv.specs || {}).filter(([, v]) => v != null && v !== '')) };
+      if (body.name) srv.name = str(body.name);
+    }
+    if (machineId) srv.machineId = machineId;
+    srv.agentToken ||= newToken();
+    save();
+    changed('servers');
+    console.log(`[agent] ${created ? '新注册' : '认领'} ${srv.name} (${srv.id}) 来自 ${remote}`);
+    return text(res, `NP_ID=${srv.id}\nNP_TOKEN=${srv.agentToken}\nNP_NAME=${srv.name.replace(/[^\w.\-一-龥 ]/g, '')}\n`);
+  },
+  { admin: false },
+);
 
 route(
   'POST',
   '/api/agent/report',
   (req, res, { url, body }) => {
     const s = agentAuth(req, url, body);
-    ingestAgent(s.id, body);
-    return { ok: true, interval: 10 };
+    ingestAgent(s, body);
+    const d = agentDirectives(s);
+    return text(res, body.cfgv === d.hash ? 'same\n' : d.text);
+  },
+  { admin: false },
+);
+
+// 长轮询：Hub 有指令（测速任务 / 配置变更）时立即返回
+route(
+  'GET',
+  '/api/agent/poll',
+  (req, res, { url }) => {
+    const s = agentAuth(req, url, null);
+    holdPoll(s.id, req, res);
+    return undefined;
   },
   { admin: false },
 );
 
 route(
+  'POST',
+  '/api/agent/task',
+  (req, res, { url, body }) => {
+    const s = agentAuth(req, url, body);
+    return { ok: taskReport(s.id, body) };
+  },
+  { admin: false },
+);
+
+// 兼容 0.1 版 Agent
+route(
   'GET',
   '/api/agent/peers',
   (req, res, { url }) => {
     const s = agentAuth(req, url, null);
-    // 纯文本「id ip」每行一条，方便 shell 解析
     return db.servers
       .filter((x) => x.id !== s.id && !x.demo && (x.ip || x.host))
       .map((x) => `${x.id} ${x.ip || x.host}`)
@@ -452,8 +735,33 @@ function serveFile(res, file) {
   });
 }
 
+// Hub 自举安装：/hub/install.sh 是填好代码包地址的安装脚本，/hub/bundle.tar.gz 现场打包本 Hub 的代码（不含 data/）
+const BUNDLE_FILES = ['package.json', 'server', 'shared', 'agent', 'dist', 'scripts/install-hub.sh', 'README.md', 'docs'];
+function hubOrigin(req) {
+  return db.settings.publicUrl || `http://${req.headers.host || `localhost:${PORT}`}`;
+}
+function serveHubInstaller(req, res, p) {
+  if (p === '/hub/install.sh') {
+    const sh = fs.readFileSync(path.join(ROOT, 'scripts', 'install-hub.sh'), 'utf8');
+    res.writeHead(200, { 'Content-Type': 'text/x-shellscript; charset=utf-8', 'Cache-Control': 'no-cache' });
+    return res.end(sh.replace('__NP_SRC__', `${hubOrigin(req)}/hub/bundle.tar.gz`));
+  }
+  if (p === '/hub/bundle.tar.gz') {
+    if (!fs.existsSync(path.join(ROOT, 'dist', 'index.html'))) return send(res, 503, '这台 Hub 还没有构建前端（npm run build），不能提供代码包');
+    const files = BUNDLE_FILES.filter((f) => fs.existsSync(path.join(ROOT, f)));
+    const tar = spawn('tar', ['-czf', '-', '-C', ROOT, ...files], { env: { ...process.env, COPYFILE_DISABLE: '1' } });
+    res.writeHead(200, { 'Content-Type': 'application/gzip', 'Content-Disposition': 'attachment; filename="network-planet.tar.gz"' });
+    tar.stdout.pipe(res);
+    tar.on('error', () => res.destroy());
+    req.on('close', () => tar.kill());
+    return;
+  }
+  send(res, 404, 'Not Found');
+}
+
 function serveStatic(req, res, url) {
   const p = decodeURIComponent(url.pathname);
+  if (p.startsWith('/hub/')) return serveHubInstaller(req, res, p);
   if (p.startsWith('/agent/')) {
     const f = path.join(ROOT, 'agent', path.basename(p));
     return serveFile(res, f);
@@ -488,12 +796,15 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[network-planet] Hub 已启动 http://localhost:${PORT}${ADMIN_TOKEN ? '（已启用 ADMIN_TOKEN）' : ''}`);
+  startHistory(new Set(db.servers.map((s) => s.id)));
   startMonitor();
+  startAlerts();
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     flush();
+    flushHistory();
     process.exit(0);
   });
 }

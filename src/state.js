@@ -5,10 +5,17 @@ const listeners = {};
 export const store = {
   servers: [],
   links: [],
+  routes: [],
   accounts: [],
   providers: [],
   settings: {},
-  status: { servers: {}, peers: [] },
+  agentVersion: '',
+  hubTz: 0,
+  status: { servers: {}, peers: [], targets: {}, bandwidth: [], alerts: [] },
+  /** 带宽测试任务（SSE task 事件），id -> task */
+  tasks: new Map(),
+  /** 未读告警事件数 */
+  unreadEvents: 0,
   /** 前端为每台机器累积的历史（与 /history 合并） */
   history: new Map(),
   selection: null, // { type: 'server'|'site'|'link', id }
@@ -25,7 +32,7 @@ export const store = {
 };
 
 function loadView() {
-  const def = { autoRotate: true, showLinks: true, showMesh: false, showLinkLabels: false, showLabels: true };
+  const def = { mode: 'globe', flatLocked: false, autoRotate: true, showLinks: true, showMesh: false, showLinkLabels: false, showLabels: true };
   try {
     return { ...def, ...JSON.parse(localStorage.getItem('np.view') || '{}') };
   } catch {
@@ -61,8 +68,34 @@ export function measuredBetween(a, b) {
     const v = arr.map((p) => p[k]).filter((x) => x != null);
     return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null;
   };
-  return { rtt: avg('rtt'), loss: avg('loss'), jitter: avg('jitter'), mbps: avg('mbps'), ts: Math.max(...arr.map((p) => p.ts)) };
+  const bw = bandwidthBetween(a, b);
+  const mbps = bw ? avgOf([bw.up, bw.down]) : null;
+  return { rtt: avg('rtt'), loss: avg('loss'), jitter: avg('jitter'), mbps, ts: Math.max(...arr.map((p) => p.ts)) };
 }
+
+const avgOf = (arr) => {
+  const v = arr.filter((x) => x != null);
+  return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null;
+};
+
+/** 最近一次带宽测试结果，统一成「从 a 的角度」：up = a→b，down = b→a */
+export function bandwidthBetween(a, b) {
+  const r = (store.status.bandwidth || []).find((x) => (x.a === a && x.b === b) || (x.a === b && x.b === a));
+  if (!r) return null;
+  return r.a === a ? { up: r.up, down: r.down, ts: r.ts } : { up: r.down, down: r.up, ts: r.ts };
+}
+
+/** 涉及这两台（或这台）的进行中的测速任务 */
+export function runningTask(a, b = null) {
+  for (const t of store.tasks.values()) {
+    if (t.state !== 'starting' && t.state !== 'running') continue;
+    if (b ? (t.a === a && t.b === b) || (t.a === b && t.b === a) : t.a === a || t.b === a) return t;
+  }
+  return null;
+}
+
+export const targetsOf = (id) => store.status.targets?.[id] || {};
+export const alertsOf = (id) => (store.status.alerts || []).filter((x) => x.serverId === id);
 
 /**
  * 计算当前要画在地球上的连线：手动连接 + （可选）实测网格。

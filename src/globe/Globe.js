@@ -333,6 +333,12 @@ export class Globe {
     this.emitResize?.(w, h);
   }
 
+  /** 平面视图时停掉 3D 渲染，省电 */
+  setPaused(paused) {
+    this.renderer.setAnimationLoop(paused ? null : () => this.tick());
+    if (!paused) this.resize();
+  }
+
   tick() {
     this.timer.update();
     const dt = Math.min(this.timer.getDelta(), 0.1);

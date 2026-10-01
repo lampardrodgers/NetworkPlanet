@@ -5,6 +5,8 @@ import { Globe, DEFAULT_ALT, latLonToVec3, vec3ToLatLon } from './globe/Globe.js
 import { LabelManager } from './globe/labels.js';
 import { Markers } from './globe/Markers.js';
 import { Links } from './globe/Links.js';
+import { FlatMap } from './flat/FlatMap.js';
+import { initRoutePanel, renderRoutePanel, routeView } from './ui/routes.js';
 import { store, select, setView, computeEdges, serverById, recordLinkHistory } from './state.js';
 import { api, subscribe } from './api.js';
 import { $, $$, toast, confirmDialog, hasOpenModal } from './ui/dom.js';
@@ -12,13 +14,30 @@ import { initSidebar, renderSidebar, renderStats } from './ui/sidebar.js';
 import { initDetail, renderDetail, updateLive } from './ui/detail.js';
 import { initForms, openServerForm, openLinkForm } from './ui/forms.js';
 import { openProviders, refreshProviders } from './ui/providers.js';
-import { openMatrix, openImportExport, openSettings, promptToken } from './ui/misc.js';
+import { openMatrix, openImportExport, promptToken } from './ui/misc.js';
+import { openSettings } from './ui/settings.js';
+import { openInstall, openEvents, renderAlertBadge } from './ui/probe.js';
 import { esc, fmtMs, latencyColor } from './format.js';
 
 let globe;
 let markers;
 let links;
+let flat;
 let pickCallback = null;
+const flatOn = () => store.view.mode === 'flat' || store.view.mode === 'route';
+const routeOn = () => store.view.mode === 'route';
+
+/** 线路模式：重新规划并交给平面视图；refit 时把起点和所有服务器框进视野 */
+function refreshRoutes({ refit = false } = {}) {
+  if (!routeOn()) return flat.setRouteView(null);
+  const rv = routeView();
+  flat.setRouteView(rv);
+  renderRoutePanel(rv.plan);
+  if (refit) {
+    // 整张世界地图，以起点为中心（和弧线「走近路」的方向一致）
+    flat.fitWorld({ around: rv.origin?.lon ?? null });
+  }
+}
 
 // ---------------- 数据 ----------------
 async function loadState() {
@@ -27,9 +46,12 @@ async function loadState() {
     Object.assign(store, {
       servers: s.servers,
       links: s.links,
+      routes: s.routes || [],
       accounts: s.accounts,
       providers: s.providers,
       settings: s.settings,
+      agentVersion: s.agentVersion,
+      hubTz: s.hubTz ?? 0,
       authRequired: s.authRequired,
     });
     store.emit('data');
@@ -57,6 +79,17 @@ function connectStream() {
       store.emit('status');
     },
     onChanged: scheduleReload,
+    onTask: (t) => {
+      store.tasks.set(t.id, t);
+      if (t.state === 'done') toast(`带宽测试完成：${t.aName} ⇄ ${t.bName}  ↑${t.up ?? '—'} / ↓${t.down ?? '—'} Mbps`, 'ok', 6000);
+      if (t.state === 'error') toast(`带宽测试失败（${t.aName} ⇄ ${t.bName}）：${t.error}`, 'error', 8000);
+      updateLive();
+    },
+    onAlert: (ev) => {
+      store.unreadEvents++;
+      renderAlertBadge();
+      toast(`${ev.level === 'firing' ? '🔴' : '✅'} ${ev.serverName} ${ev.ruleName}${ev.level === 'resolved' ? '已恢复' : `：${ev.text}`}`, ev.level === 'firing' ? 'error' : 'ok', 7000);
+    },
     onOpen: () => {
       store.connected = true;
       renderStats();
@@ -74,6 +107,9 @@ function connectStream() {
 store.on('data', () => {
   markers.setData(store.servers, store.status.servers);
   links.setEdges(computeEdges());
+  flat.setData(store.servers, store.status.servers);
+  flat.setEdges(computeEdges());
+  refreshRoutes();
   const sel = store.selection;
   if (sel?.type === 'server' && !serverById(sel.id)) select(null);
   if (sel?.type === 'site' && !markers.sites.has(sel.id)) select(null);
@@ -86,13 +122,18 @@ store.on('data', () => {
 store.on('status', () => {
   markers.refreshStatus(store.status.servers);
   links.setEdges(computeEdges());
+  flat.refreshStatus(store.status.servers);
+  flat.setEdges(computeEdges());
+  refreshRoutes();
   renderSidebar();
   renderStats();
+  renderAlertBadge();
   updateLive();
 });
 
 store.on('select', (sel) => {
   markers.setSelection(sel);
+  flat.setSelection(sel);
   links.focusServer = sel?.type === 'server' ? sel.id : null;
   links.selectedKey = sel?.type === 'link' ? sel.id : null;
   if (sel) pauseAutoRotate();
@@ -102,18 +143,39 @@ store.on('select', (sel) => {
 
 store.on('view', applyView);
 
+let lastMode = null;
 function applyView() {
   const v = store.view;
-  markers.showLabels = v.showLabels;
-  links.showLabels = v.showLinkLabels;
+  markers.showLabels = flat.showLabels = v.showLabels;
+  links.showLabels = flat.showLinkLabels = v.showLinkLabels;
   globe.controls.autoRotate = v.autoRotate && !store.selection;
   links.setEdges(computeEdges());
+  flat.setEdges(computeEdges());
   for (const b of $$('#viewbar [data-toggle]')) b.classList.toggle('on', Boolean(v[b.dataset.toggle]));
+  for (const b of $$('#viewbar [data-mode]')) b.classList.toggle('on', b.dataset.mode === v.mode);
+  flat.setLocked(Boolean(v.flatLocked));
+  $('[data-toggle=flatLocked]').classList.toggle('hidden', !flatOn());
+  if (v.mode !== lastMode) {
+    const was = lastMode;
+    lastMode = v.mode;
+    $('#globe').classList.toggle('hidden', flatOn());
+    globe.setPaused(flatOn());
+    $('#routepanel').classList.toggle('hidden', !routeOn());
+    $('[data-toggle=autoRotate]').classList.toggle('hidden', flatOn());
+    flat.setActive(flatOn());
+    refreshRoutes({ refit: routeOn() && was != null });
+    if (v.mode === 'flat' && was === 'route') flat.fitAll();
+  }
 }
 
 // ---------------- 相机 ----------------
 function flyToSelection(sel, { zoom = true } = {}) {
   if (!sel) return;
+  if (flatOn()) {
+    if (sel.type === 'site') flat.fit(markers.sites.get(sel.id)?.servers || [], { maxK: 120 });
+    else if (zoom || sel.type !== 'server') flat.focus(sel);
+    return;
+  }
   if (sel.type === 'server') {
     const s = serverById(sel.id);
     if (!s) return;
@@ -199,17 +261,22 @@ function bindPointer() {
       links.hoverKey = hit?.type === 'link' ? hit.id : null;
       el.style.cursor = pickCallback ? 'crosshair' : hit ? 'pointer' : '';
       if (hit?.type === 'link') {
-        const [a, b] = hit.id.split('|').map(serverById);
-        const edge = computeEdges().find((x) => x.key === hit.id);
-        const rtt = edge?.measured?.rtt;
-        tip.innerHTML = `<b>${esc(a?.name)}</b> ⟷ <b>${esc(b?.name)}</b><br/>${edge?.measured ? `<span style="color:${latencyColor(rtt)}">${rtt == null ? '中断' : fmtMs(rtt)}</span>` : `≈ ${fmtMs(edge?.estimate)}（估算）`}${edge?.link?.label ? ` · ${esc(edge.link.label)}` : ''}`;
-        tip.style.left = `${e.clientX + 14}px`;
-        tip.style.top = `${e.clientY + 12}px`;
-        tip.classList.remove('hidden');
+        showLinkTip(hit, e);
       } else tip.classList.add('hidden');
     });
   });
   el.addEventListener('pointerleave', () => tip.classList.add('hidden'));
+}
+
+function showLinkTip(hit, e) {
+  const tip = $('#tooltip');
+  const [a, b] = hit.id.split('|').map(serverById);
+  const edge = computeEdges().find((x) => x.key === hit.id);
+  const rtt = edge?.measured?.rtt;
+  tip.innerHTML = `<b>${esc(a?.name)}</b> ⟷ <b>${esc(b?.name)}</b><br/>${edge?.measured ? `<span style="color:${latencyColor(rtt)}">${rtt == null ? '中断' : fmtMs(rtt)}</span>` : `≈ ${fmtMs(edge?.estimate)}（估算）`}${edge?.link?.label ? ` · ${esc(edge.link.label)}` : ''}`;
+  tip.style.left = `${e.clientX + 14}px`;
+  tip.style.top = `${e.clientY + 12}px`;
+  tip.classList.remove('hidden');
 }
 
 function startPick(cb) {
@@ -221,6 +288,7 @@ function finishPick(ll) {
   pickCallback = null;
   $('#pickhint').classList.add('hidden');
   $('#globe').style.cursor = '';
+  flat.canvas.style.cursor = '';
   cb?.(ll);
 }
 
@@ -236,14 +304,24 @@ const actions = {
         select(sel);
         flyToSelection(sel);
       },
+      onPickServer: (id) => {
+        const sel = { type: 'server', id };
+        select(sel);
+        flyToSelection(sel);
+      },
     }),
   'import-export': () => openImportExport(),
   settings: () => openSettings({ onChanged: renderDetail }),
-  'zoom-in': () => globe.zoomBy(0.5),
-  'zoom-out': () => globe.zoomBy(2),
+  install: () => openInstall(),
+  events: () => openEvents({ onSelect: (id) => { const sel = { type: 'server', id }; select(sel); flyToSelection(sel); } }),
+  'zoom-in': () => (flatOn() ? flat.zoomBy(2) : globe.zoomBy(0.5)),
+  'zoom-out': () => (flatOn() ? flat.zoomBy(0.5) : globe.zoomBy(2)),
   'reset-view': () => {
     select(null);
-    globe.flyTo({ alt: DEFAULT_ALT });
+    if (routeOn()) refreshRoutes({ refit: true });
+    else if (flatOn()) flat.fitAll();
+    // 锁定时 fitAll 只是重新选中心经度，视角本身是固定的
+    else globe.flyTo({ alt: DEFAULT_ALT });
   },
 };
 
@@ -253,6 +331,8 @@ function bindActions() {
     if (a && actions[a.dataset.action]) actions[a.dataset.action]();
     const t = e.target.closest('[data-toggle]');
     if (t) setView({ [t.dataset.toggle]: !store.view[t.dataset.toggle] });
+    const md = e.target.closest('#viewbar [data-mode]');
+    if (md) setView({ mode: md.dataset.mode });
   });
   document.addEventListener('keydown', (e) => {
     if (e.target.matches('input, textarea, select')) return;
@@ -265,8 +345,8 @@ function bindActions() {
       e.preventDefault();
       $('#sidebar input[type=search]')?.focus();
     }
-    if (e.key === '+' || e.key === '=') globe.zoomBy(0.6);
-    if (e.key === '-') globe.zoomBy(1.6);
+    if (e.key === '+' || e.key === '=') actions['zoom-in']();
+    if (e.key === '-') actions['zoom-out']();
     if (e.key === 'n') openServerForm();
   });
 }
@@ -279,7 +359,23 @@ async function boot() {
   markers = new Markers(globe, labels);
   links = new Links(globe, markers, labels);
   globe.controls.addEventListener('start', pauseAutoRotate);
-  window.np = { store, globe, markers, links, select }; // 方便在控制台调试
+  flat = new FlatMap($('#flat'), {
+    isPicking: () => Boolean(pickCallback),
+    onPickLocation: (ll) => finishPick(ll),
+    onSelect: (hit) => select(hit ? { type: hit.type, id: hit.id } : null),
+    onHover: (hit, e) => {
+      const tip = $('#tooltip');
+      if (hit?.type === 'link' && !routeOn()) showLinkTip(hit, e);
+      else tip.classList.add('hidden');
+    },
+  });
+  initRoutePanel({
+    onHover: (id) => (flat.hover = id ? { type: 'server', id } : null),
+    onSelect: (id) => select({ type: 'server', id }),
+    onChange: (opts) => refreshRoutes(opts),
+    pickLocation: (cb) => startPick(cb),
+  });
+  window.np = { store, globe, markers, links, flat, select }; // 方便在控制台调试
 
   initSidebar({
     onSelect: (id) => {
@@ -287,7 +383,7 @@ async function boot() {
       select(sel);
       flyToSelection(sel);
     },
-    onHover: (id) => (markers.hover = id ? { type: 'server', id } : null),
+    onHover: (id) => (markers.hover = flat.hover = id ? { type: 'server', id } : null),
     onAdd: () => openServerForm(),
   });
   initDetail({
@@ -337,6 +433,7 @@ async function boot() {
   applyView();
 
   await loadState();
+  if (routeOn()) refreshRoutes({ refit: true });
   connectStream();
   $('#loading').classList.add('done');
   setTimeout(() => $('#loading').remove(), 600);

@@ -1,25 +1,36 @@
 // 杂项弹窗：延迟矩阵、JSON/CSV 导入导出、设置、管理口令。
 import { store, measuredBetween, cityName } from '../state.js';
 import { estimateRttMs } from '../../shared/cities.js';
-import { api, setToken, getToken } from '../api.js';
+import { api, setToken } from '../api.js';
 import { openModal, $, toast, confirmDialog } from './dom.js';
 import { esc, latencyColor, fmtMs } from '../format.js';
 
 // ---------------- 延迟矩阵 ----------------
-export function openMatrix({ onPick } = {}) {
+let matrixMode = 'peers';
+
+export function openMatrix({ onPick, onPickServer } = {}) {
   const servers = [...store.servers].sort((a, b) => (a.lon ?? 0) - (b.lon ?? 0));
-  if (servers.length < 2) return toast('至少需要两台服务器', 'warn');
+  if (!servers.length) return toast('还没有服务器', 'warn');
   const m = openModal({
-    title: '互联延迟矩阵',
+    title: '延迟矩阵',
     wide: true,
     content: `
       <div class="matrix-tools">
-        <label class="check"><input type="checkbox" data-est checked /> 无实测时显示估算值（斜体）</label>
-        <span class="hint">按经度从西到东排序 · 点击格子查看这条链路</span>
+        <div class="seg" data-mode><button data-v="peers">服务器互联</button><button data-v="targets">三网 / 检测目标</button></div>
+        <label class="check" data-est-wrap><input type="checkbox" data-est checked /> 无实测时显示估算值（斜体）</label>
+        <span class="hint" data-tip></span>
       </div>
       <div class="matrix-wrap"></div>`,
   });
   const render = () => {
+    for (const b of $('[data-mode]', m.el).children) b.classList.toggle('on', b.dataset.v === matrixMode);
+    $('[data-est-wrap]', m.el).classList.toggle('hidden', matrixMode !== 'peers');
+    if (matrixMode === 'targets') return renderTargets();
+    $('[data-tip]', m.el).textContent = '按经度从西到东排序 · 点击格子查看这条链路';
+    if (servers.length < 2) {
+      $('.matrix-wrap', m.el).innerHTML = '<p class="hint" style="padding:16px">至少需要两台服务器</p>';
+      return;
+    }
     const showEst = $('[data-est]', m.el).checked;
     const head = servers.map((s) => `<th title="${esc(s.name)}"><div class="vh">${esc(s.name)}</div></th>`).join('');
     const rows = servers
@@ -42,13 +53,49 @@ export function openMatrix({ onPick } = {}) {
       .join('');
     $('.matrix-wrap', m.el).innerHTML = `<table class="matrix"><thead><tr><th></th>${head}</tr></thead><tbody>${rows}</tbody></table>`;
   };
+  // 行 = 服务器，列 = 检测目标（按分组排列）
+  const renderTargets = () => {
+    const targets = (store.settings.targets || []).filter((t) => t.enabled);
+    $('[data-tip]', m.el).textContent = '数据来自各服务器的 Agent · 点击行查看服务器';
+    if (!targets.length) {
+      $('.matrix-wrap', m.el).innerHTML = '<p class="hint" style="padding:16px">没有启用的检测目标（⚙ 设置 →「检测目标」）</p>';
+      return;
+    }
+    const head = targets.map((t) => `<th title="${esc(t.host)}"><div class="vh">${esc(t.name)}</div></th>`).join('');
+    const rows = servers
+      .map((s) => {
+        const res = store.status.targets?.[s.id] || {};
+        const cells = targets
+          .map((t) => {
+            const r = res[t.id];
+            if (!r) return '<td class="nodata"></td>';
+            if (r.rtt == null) return `<td style="color:var(--lat-bad)" title="不通">✕</td>`;
+            const c = latencyColor(r.rtt);
+            return `<td style="background:${c}33;color:${c}" title="${esc(s.name)} → ${esc(t.name)}：${fmtMs(r.rtt)}${r.loss ? ` 丢包 ${r.loss}%` : ''}">${Math.round(r.rtt)}${r.loss ? '<sup>!</sup>' : ''}</td>`;
+          })
+          .join('');
+        return `<tr data-sid="${s.id}"><th class="rh" title="${esc(cityName(s.city))}">${esc(s.name)}</th>${cells}</tr>`;
+      })
+      .join('');
+    $('.matrix-wrap', m.el).innerHTML = `<table class="matrix tmatrix"><thead><tr><th></th>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+  };
   render();
   $('[data-est]', m.el).addEventListener('change', render);
+  $('[data-mode]', m.el).addEventListener('click', (e) => {
+    if (!e.target.dataset.v) return;
+    matrixMode = e.target.dataset.v;
+    render();
+  });
   $('.matrix-wrap', m.el).addEventListener('click', (e) => {
     const td = e.target.closest('td[data-a]');
-    if (!td) return;
-    m.close();
-    onPick?.(td.dataset.a, td.dataset.b);
+    const tr = e.target.closest('tr[data-sid]');
+    if (td) {
+      m.close();
+      onPick?.(td.dataset.a, td.dataset.b);
+    } else if (tr) {
+      m.close();
+      onPickServer?.(tr.dataset.sid);
+    }
   });
   const timer = setInterval(() => (document.body.contains(m.el) ? render() : clearInterval(timer)), 5000);
 }
@@ -132,62 +179,6 @@ function parseImport(text) {
     return o;
   });
   return { servers };
-}
-
-// ---------------- 设置 ----------------
-export function openSettings({ onChanged } = {}) {
-  const s = store.settings;
-  const demoCount = store.servers.filter((x) => x.demo).length;
-  const m = openModal({
-    title: '设置',
-    content: `
-      <form class="form">
-        <label>Hub 公网地址（Agent 上报用）
-          <input class="input mono" name="publicUrl" value="${esc(s.publicUrl || '')}" placeholder="${esc(location.origin)}" />
-        </label>
-        <p class="hint">VPS 上的 Agent 需要能访问这个地址。留空则使用当前浏览器地址。</p>
-        <label>Hub 探测间隔（秒）<input class="input" name="probeIntervalSec" type="number" min="5" max="600" value="${s.probeIntervalSec || 15}" /></label>
-        <p class="hint">Hub 会对每台服务器的「探测端口」做 TCP 连接测延迟（无需 Agent）。</p>
-        <div class="form-actions"><button class="btn primary" type="submit">保存</button></div>
-      </form>
-      <h4>演示数据</h4>
-      <div class="row-actions">
-        <span class="hint">当前 ${demoCount} 台演示服务器</span>
-        ${demoCount ? '<button class="btn sm danger" data-clear-demo>清除演示数据</button>' : '<button class="btn sm" data-seed-demo>载入演示数据</button>'}
-      </div>
-      <h4>访问口令</h4>
-      <div class="row-actions">
-        <span class="hint">${store.authRequired ? 'Hub 已启用 ADMIN_TOKEN。' : 'Hub 未设置 ADMIN_TOKEN（启动时设置环境变量即可启用）。'}</span>
-        ${getToken() ? '<button class="btn sm" data-logout>清除本地口令</button>' : ''}
-      </div>`,
-  });
-  $('form', m.el).addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const f = e.target.elements;
-    try {
-      store.settings = await api('PUT', '/api/settings', { publicUrl: f.publicUrl.value.trim().replace(/\/$/, ''), probeIntervalSec: Number(f.probeIntervalSec.value) || 15 });
-      toast('已保存', 'ok');
-      m.close();
-      onChanged?.();
-    } catch (x) {
-      toast(x.message, 'error');
-    }
-  });
-  $('[data-clear-demo]', m.el)?.addEventListener('click', async () => {
-    if (!(await confirmDialog(`删除全部 ${demoCount} 台演示服务器及其连接？`, { danger: true, okText: '清除' }))) return;
-    await api('DELETE', '/api/demo');
-    toast('演示数据已清除', 'ok');
-    m.close();
-  });
-  $('[data-seed-demo]', m.el)?.addEventListener('click', async () => {
-    await api('POST', '/api/demo');
-    toast('已载入演示数据', 'ok');
-    m.close();
-  });
-  $('[data-logout]', m.el)?.addEventListener('click', () => {
-    setToken('');
-    location.reload();
-  });
 }
 
 export function promptToken() {

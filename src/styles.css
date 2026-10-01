@@ -495,7 +495,7 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 0 4px; border-radius: 
 .matrix { border-collapse: collapse; font: 11px var(--mono); }
 .matrix th { position: sticky; background: var(--panel-2); font-weight: 500; color: var(--text-2); z-index: 1; }
 .matrix thead th { top: 0; height: 110px; vertical-align: bottom; padding: 4px 0; }
-.matrix .vh { writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; max-height: 104px; overflow: hidden; text-overflow: ellipsis; margin: 0 auto; }
+.matrix .vh { writing-mode: vertical-rl; white-space: nowrap; max-height: 104px; overflow: hidden; text-overflow: ellipsis; margin: 0 auto; }
 .matrix th.rh { left: 0; text-align: right; padding: 0 8px; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .matrix thead th:first-child { left: 0; z-index: 2; }
 .matrix td { width: 34px; min-width: 34px; height: 24px; text-align: center; border: 1px solid rgba(2, 8, 20, 0.8); cursor: pointer; }
@@ -534,4 +534,178 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 0 4px; border-radius: 
   .grid3, .grid4 { grid-template-columns: repeat(2, 1fr); }
   .prov-layout { grid-template-columns: 1fr; }
   .prov-add { padding-left: 0; border-left: 0; }
+}
+
+/* ---------------- 探针 / 设置 / 告警 ---------------- */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: -4px 0 4px; }
+.tabs button { border: 0; background: transparent; color: var(--text-2); padding: 7px 14px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs button:hover { color: var(--text); }
+.tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.settings section[data-pane] { display: flex; flex-direction: column; gap: 10px; }
+.opt-grid { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); }
+.opt-row { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 10px; padding: 8px 12px; font-size: 12.5px; color: var(--text-2); }
+.opt-row + .opt-row { border-top: 1px solid var(--border); }
+.opt-row > b, .opt-row label.check b { color: var(--text); font-weight: 600; }
+.opt-row > span { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.opt-row select.input { width: auto; }
+.num-in { display: inline-flex; align-items: center; gap: 3px; }
+.num-in input { width: 72px; }
+.num-in em { font-style: normal; color: var(--muted); }
+.form legend label.check { color: var(--accent-2); }
+.targets-table td { padding: 4px 6px; }
+.targets-table .input.sm { min-width: 0; }
+.warn-box { margin: 0 0 6px; padding: 8px 12px; border: 1px solid rgba(251, 191, 36, 0.45); background: rgba(251, 191, 36, 0.08); border-radius: 8px; color: #fde68a; font-size: 12.5px; }
+.detail-body .warn-box { margin-top: 10px; border-color: rgba(251, 113, 133, 0.5); background: rgba(251, 113, 133, 0.1); color: #fecdd3; }
+details.more { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
+details.more summary { cursor: pointer; color: var(--text-2); font-size: 12px; }
+
+.bell { position: relative; }
+.badge-n { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--muted); color: #fff; font-size: 10px; line-height: 16px; text-align: center; font-weight: 700; }
+.badge-n.firing { background: var(--bad); animation: blink 1.4s infinite; }
+.pill.warn { background: rgba(251, 113, 133, 0.2); color: var(--bad); }
+
+.ag { font-family: var(--mono); font-size: 11.5px; }
+.ag.ok { color: var(--ok); }
+.ag.old { color: var(--warn); }
+.ag.stale { color: var(--bad); }
+.ag.none, .ag.demo { color: var(--muted); }
+.alert-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid rgba(251, 113, 133, 0.35); border-radius: 8px; margin-bottom: 6px; cursor: pointer; font-size: 12.5px; }
+.alert-row:hover { background: rgba(251, 113, 133, 0.08); }
+tr.ev { cursor: pointer; }
+tr.ev.resolved td { color: var(--text-2); }
+tr.ev:hover td { background: rgba(56, 189, 248, 0.06); }
+
+.traffic-main { font-family: var(--mono); font-size: 13px; margin-bottom: 4px; }
+.traffic-main b { font-size: 16px; }
+.tbar { height: 6px; border-radius: 3px; background: rgba(148, 163, 184, 0.15); overflow: hidden; margin-bottom: 4px; }
+.tbar i { display: block; height: 100%; border-radius: 3px; }
+.calib { margin-top: 6px; }
+.calib .input { flex: 1; }
+.gdot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+.peer-row.tgt { grid-template-columns: 110px 1fr 74px; }
+.bw-row { display: grid; grid-template-columns: 1fr 86px 86px 64px; gap: 6px; align-items: center; padding: 4px 6px; border-radius: 6px; font-size: 11.5px; cursor: pointer; }
+.bw-row:hover { background: rgba(56, 189, 248, 0.08); }
+.bw-row .pn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-row .muted { text-align: right; font-size: 10.5px; }
+.bw-ctrl { margin-top: 6px; }
+.metrics .metric .muted { font-size: 11px; }
+.matrix td.nodata { background: rgba(148, 163, 184, 0.04); cursor: default; }
+.matrix td sup { color: var(--bad); font-size: 8px; }
+.tmatrix tbody tr { cursor: pointer; }
+.tmatrix thead th { height: auto; padding: 6px 2px; }
+.tmatrix .vh { writing-mode: horizontal-tb; max-height: none; font-family: system-ui, sans-serif; font-size: 11px; }
+.tmatrix td { min-width: 52px; }
+.tmatrix tbody tr:hover th { color: var(--accent); }
+@media (max-width: 800px) {
+  .opt-row { grid-template-columns: 1fr; }
+}
+
+/* ---------------- 历史图表 / 流量周期 ---------------- */
+.tchart { position: relative; }
+.tchart canvas { display: block; width: 100%; height: 150px; }
+.tchart.tall canvas { height: 200px; }
+.tchart.mini { margin-top: 8px; }
+.tchart.mini canvas { height: 96px; }
+.tchart-tip {
+  position: absolute; top: 4px; pointer-events: none; z-index: 2; min-width: 150px;
+  background: rgba(6, 13, 26, 0.95); border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 6px 8px; font-size: 11.5px; box-shadow: var(--shadow);
+}
+.tchart-tip .tt { color: var(--text-2); margin-bottom: 3px; white-space: nowrap; }
+.tchart-tip div:not(.tt) { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.tchart-tip i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.tchart-tip b { margin-left: auto; padding-left: 12px; font-family: var(--mono); font-weight: 500; }
+.tchart-tip .sum { color: var(--text-2); border-top: 1px dashed var(--border); margin-top: 3px; padding-top: 3px; }
+.modal.xl { width: 1180px; }
+.hist { display: flex; flex-direction: column; gap: 10px; }
+.hist section { min-width: 0; }
+.hist h4 { margin: 4px 0 6px; }
+.hist h5 { margin: 0 0 4px; font-size: 12px; color: var(--text-2); font-weight: 500; display: flex; gap: 8px; align-items: center; }
+.hist-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.hist-bar .seg button { padding: 5px 12px; }
+.hist-bar .custom { display: flex; align-items: center; gap: 6px; }
+.hist-bar .custom .input { width: 190px; }
+.hist-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.hist-cards small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 18px; }
+.legend { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; font-size: 11px; color: var(--text-2); font-weight: 400; }
+.legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-left: 6px; }
+.legend i.dash { height: 0; border-top: 1.5px dashed; border-radius: 0; background: none; }
+.cycles { max-height: 230px; overflow-y: auto; }
+.table.cyc td { padding-top: 5px; padding-bottom: 5px; }
+.table.cyc tbody tr { cursor: pointer; }
+.table.cyc tbody tr:hover, .table.cyc tbody tr.on { background: rgba(56, 189, 248, 0.1); }
+.table.cyc .tbar { display: inline-block; width: calc(100% - 52px); vertical-align: middle; margin: 0 6px 0 0; }
+.tbar { position: relative; }
+.tbar em { position: absolute; top: -2px; bottom: -2px; width: 2px; background: rgba(226, 236, 248, 0.7); border-radius: 1px; }
+.input-unit { display: flex; gap: 4px; }
+.input-unit .input:first-child { flex: 1; min-width: 0; }
+.input-unit select.input { width: 64px; flex: none; }
+@media (max-width: 900px) {
+  .hist-grid2 { grid-template-columns: 1fr; }
+}
+
+/* ---------------- 平面视图 ---------------- */
+#flat { position: fixed; inset: 0; touch-action: none; background: #050b17; }
+#flat canvas { display: block; cursor: grab; outline: none; }
+
+/* ---------------- 线路模式面板 ---------------- */
+#routepanel {
+  position: fixed;
+  top: 72px;
+  right: 12px;
+  bottom: 60px;
+  width: 360px;
+  z-index: 14;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+#detail:not(.hidden) ~ #routepanel, #routepanel:has(~ #detail:not(.hidden)) { visibility: hidden; }
+.rp-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 6px 14px; }
+.rp-head b { font-size: 14px; white-space: nowrap; }
+.rp-head select { flex: 1; min-width: 0; }
+.rp-warn { margin: 4px 10px; padding: 8px 10px; border-radius: 8px; background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.35); color: var(--warn); font-size: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rp-tools { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px 8px 14px; }
+.rp-sum { display: flex; gap: 12px; padding: 6px 14px 8px; font-size: 12px; color: var(--text-2); border-bottom: 1px solid var(--border); }
+.rp-sum b { color: var(--text); font-family: var(--mono); }
+.rp-sum .warn b { color: var(--warn); }
+.rp-list { flex: 1; overflow-y: auto; padding: 6px; }
+.rp-list::-webkit-scrollbar { width: 6px; }
+.rp-list::-webkit-scrollbar-thumb { background: rgba(125, 211, 252, 0.2); border-radius: 3px; }
+.rp-row { padding: 8px 10px; border-radius: 10px; border: 1px solid transparent; cursor: pointer; margin-bottom: 4px; }
+.rp-row:hover { background: rgba(255, 255, 255, 0.04); border-color: var(--border); }
+.rp-row.via { background: rgba(56, 189, 248, 0.05); }
+.rp-row.has-sug { border-color: rgba(251, 191, 36, 0.25); }
+.rp-top { display: flex; align-items: baseline; gap: 6px; }
+.rp-top b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rp-top small { color: var(--muted); white-space: nowrap; }
+.rp-top em { margin-left: auto; font-style: normal; font-family: var(--mono); font-weight: 600; white-space: nowrap; }
+.rp-path { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-top: 5px; font-size: 11.5px; color: var(--text-2); }
+.rp-path i { color: var(--muted); font-style: normal; }
+.rp-hop { font-family: var(--mono); font-size: 10.5px; padding: 0 6px; border: 1px solid; border-radius: 999px; white-space: nowrap; }
+.rp-cmp { margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+.rp-sug { margin-top: 6px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 8px; background: rgba(251, 191, 36, 0.08); color: var(--warn); font-size: 12px; }
+.rp-sug b { color: var(--text); font-weight: 600; }
+.rp-acts { display: none; gap: 12px; margin-top: 4px; }
+.rp-row:hover .rp-acts { display: flex; }
+.rp-foot { margin: 0; padding: 8px 14px 10px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+.link-btn { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; font-size: 12px; }
+.link-btn:hover { text-decoration: underline; }
+.link-btn.bad { color: var(--bad); }
+.row-btns { display: flex; gap: 8px; }
+.rf-chain { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px dashed var(--border-strong); border-radius: 10px; }
+.rf-end { font-weight: 600; padding: 4px 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.05); align-self: flex-start; }
+.rf-via { display: flex; align-items: center; gap: 6px; }
+.rf-via span { color: var(--accent); font-size: 12px; white-space: nowrap; }
+.rf-via select { flex: 1; min-width: 0; }
+.rf-chain .input.sm { margin-left: 18px; width: calc(100% - 18px); border-style: dashed; }
+.rf-preview { font-size: 12.5px; color: var(--text-2); }
+@media (max-width: 800px) {
+  #routepanel { left: 12px; width: auto; top: auto; height: 45vh; }
 }

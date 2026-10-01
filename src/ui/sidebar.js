@@ -1,5 +1,5 @@
 // 左侧服务器列表：搜索、按状态过滤、按城市/供应商/标签分组。
-import { store, statusOf, cityName } from '../state.js';
+import { store, statusOf, cityName, alertsOf } from '../state.js';
 import { statusKey, fmtMs, latencyColor, esc, providerColor } from '../format.js';
 import { $ } from './dom.js';
 
@@ -133,7 +133,7 @@ function item(s, sel) {
     <div class="srv-item ${sel === s.id ? 'active' : ''}" data-id="${s.id}">
       <i class="dot ${key}"></i>
       <div class="srv-main">
-        <div class="srv-name">${esc(s.name)}${s.demo ? '<span class="pill">演示</span>' : ''}</div>
+        <div class="srv-name">${esc(s.name)}${s.demo ? '<span class="pill">演示</span>' : ''}${alertsOf(s.id).length ? `<span class="pill warn" title="${esc(alertsOf(s.id).map((a) => a.ruleName).join('、'))}">⚠</span>` : ''}</div>
         <div class="srv-sub"><span class="prov" style="color:${providerColor(s.provider)}">${esc(s.provider || '—')}</span> · ${esc(s.ip || s.host || '')}</div>
       </div>
       <div class="srv-rtt" style="color:${latencyColor(rtt)}">${key === 'offline' ? '<span class="off">离线</span>' : fmtMs(rtt)}</div>
