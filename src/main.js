@@ -1,0 +1,348 @@
+// 入口：把 Hub 数据、3D 地球、各 UI 面板串起来。
+import './styles.css';
+import * as THREE from 'three';
+import { Globe, DEFAULT_ALT, latLonToVec3, vec3ToLatLon } from './globe/Globe.js';
+import { LabelManager } from './globe/labels.js';
+import { Markers } from './globe/Markers.js';
+import { Links } from './globe/Links.js';
+import { store, select, setView, computeEdges, serverById, recordLinkHistory } from './state.js';
+import { api, subscribe } from './api.js';
+import { $, $$, toast, confirmDialog, hasOpenModal } from './ui/dom.js';
+import { initSidebar, renderSidebar, renderStats } from './ui/sidebar.js';
+import { initDetail, renderDetail, updateLive } from './ui/detail.js';
+import { initForms, openServerForm, openLinkForm } from './ui/forms.js';
+import { openProviders, refreshProviders } from './ui/providers.js';
+import { openMatrix, openImportExport, openSettings, promptToken } from './ui/misc.js';
+import { esc, fmtMs, latencyColor } from './format.js';
+
+let globe;
+let markers;
+let links;
+let pickCallback = null;
+
+// ---------------- 数据 ----------------
+async function loadState() {
+  try {
+    const s = await api('GET', '/api/state');
+    Object.assign(store, {
+      servers: s.servers,
+      links: s.links,
+      accounts: s.accounts,
+      providers: s.providers,
+      settings: s.settings,
+      authRequired: s.authRequired,
+    });
+    store.emit('data');
+  } catch (e) {
+    if (e.status === 401) {
+      await promptToken();
+      return loadState();
+    }
+    toast(`加载失败：${e.message}`, 'error', 6000);
+  }
+}
+
+let reloadTimer;
+const scheduleReload = () => {
+  clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(loadState, 120);
+};
+
+function connectStream() {
+  let hadError = false;
+  subscribe({
+    onStatus: (snap) => {
+      store.status = snap;
+      recordLinkHistory();
+      store.emit('status');
+    },
+    onChanged: scheduleReload,
+    onOpen: () => {
+      store.connected = true;
+      renderStats();
+      if (hadError) scheduleReload(); // 断线期间可能错过了变更
+    },
+    onError: () => {
+      hadError = true;
+      store.connected = false;
+      renderStats();
+    },
+  });
+}
+
+// ---------------- 状态 → 视图 ----------------
+store.on('data', () => {
+  markers.setData(store.servers, store.status.servers);
+  links.setEdges(computeEdges());
+  const sel = store.selection;
+  if (sel?.type === 'server' && !serverById(sel.id)) select(null);
+  if (sel?.type === 'site' && !markers.sites.has(sel.id)) select(null);
+  renderSidebar();
+  renderStats();
+  renderDetail();
+  refreshProviders();
+});
+
+store.on('status', () => {
+  markers.refreshStatus(store.status.servers);
+  links.setEdges(computeEdges());
+  renderSidebar();
+  renderStats();
+  updateLive();
+});
+
+store.on('select', (sel) => {
+  markers.setSelection(sel);
+  links.focusServer = sel?.type === 'server' ? sel.id : null;
+  links.selectedKey = sel?.type === 'link' ? sel.id : null;
+  if (sel) pauseAutoRotate();
+  renderDetail();
+  renderSidebar();
+});
+
+store.on('view', applyView);
+
+function applyView() {
+  const v = store.view;
+  markers.showLabels = v.showLabels;
+  links.showLabels = v.showLinkLabels;
+  globe.controls.autoRotate = v.autoRotate && !store.selection;
+  links.setEdges(computeEdges());
+  for (const b of $$('#viewbar [data-toggle]')) b.classList.toggle('on', Boolean(v[b.dataset.toggle]));
+}
+
+// ---------------- 相机 ----------------
+function flyToSelection(sel, { zoom = true } = {}) {
+  if (!sel) return;
+  if (sel.type === 'server') {
+    const s = serverById(sel.id);
+    if (!s) return;
+    const multi = (markers.siteOfServer(s.id)?.servers.length || 1) > 1;
+    globe.flyTo({ lat: s.lat, lon: s.lon, alt: zoom ? Math.min(globe.altitude, multi ? 0.22 : 0.7) : globe.altitude });
+  } else if (sel.type === 'site') {
+    const site = markers.sites.get(sel.id);
+    if (site) globe.flyTo({ lat: site.lat, lon: site.lon, alt: Math.min(globe.altitude, 0.2) });
+  } else if (sel.type === 'link') {
+    const [a, b] = sel.id.split('|').map(serverById);
+    if (!a || !b) return;
+    const va = latLonToVec3(a.lat, a.lon);
+    const vb = latLonToVec3(b.lat, b.lon);
+    const mid = vec3ToLatLon(va.clone().add(vb).normalize().lengthSq() > 0.01 ? va.clone().add(vb) : va);
+    const angle = va.angleTo(vb);
+    globe.flyTo({ lat: mid.lat, lon: mid.lon, alt: THREE.MathUtils.clamp(angle * 1.4, 0.12, 2.6) });
+  }
+}
+
+let rotateTimer;
+function pauseAutoRotate() {
+  globe.controls.autoRotate = false;
+  clearTimeout(rotateTimer);
+  rotateTimer = setTimeout(() => {
+    if (store.view.autoRotate && !store.selection) globe.controls.autoRotate = true;
+  }, 25000);
+}
+
+// ---------------- 指针交互 ----------------
+function pickAt(x, y) {
+  return markers.pick(x, y) || links.pick(x, y);
+}
+
+function bindPointer() {
+  const el = $('#globe');
+  let down = null;
+  el.addEventListener('pointerdown', (e) => {
+    down = { x: e.clientX, y: e.clientY, t: performance.now() };
+    pauseAutoRotate();
+    globe.cancelFlight();
+  });
+  el.addEventListener('pointerup', (e) => {
+    if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5 || performance.now() - down.t > 600) return;
+    down = null;
+    // 点在标签上：标签自己处理
+    if (e.target.closest('.np-label')) return;
+    if (pickCallback) {
+      const ll = globe.pickEarth(e.clientX, e.clientY);
+      if (ll) finishPick(ll);
+      return;
+    }
+    const hit = pickAt(e.clientX, e.clientY);
+    if (hit) {
+      select({ type: hit.type, id: hit.id });
+      if (hit.type === 'site') flyToSelection(hit);
+    } else select(null);
+  });
+  el.addEventListener('dblclick', (e) => {
+    const ll = globe.pickEarth(e.clientX, e.clientY);
+    if (ll) globe.flyTo({ lat: ll.lat, lon: ll.lon, alt: globe.altitude * 0.4, duration: 700 });
+  });
+
+  // 标签点击
+  globe.labelRenderer.domElement.addEventListener('click', (e) => {
+    const l = e.target.closest('.np-label');
+    if (!l || pickCallback) return;
+    if (l.dataset.server) select({ type: 'server', id: l.dataset.server });
+    else if (l.dataset.site) {
+      select({ type: 'site', id: l.dataset.site });
+      flyToSelection(store.selection);
+    } else if (l.dataset.link) select({ type: 'link', id: l.dataset.link });
+  });
+
+  // 悬停
+  const tip = $('#tooltip');
+  let raf = 0;
+  el.addEventListener('pointermove', (e) => {
+    if (raf || e.buttons) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      const hit = pickCallback ? null : pickAt(e.clientX, e.clientY);
+      markers.hover = hit?.type === 'server' ? hit : null;
+      links.hoverKey = hit?.type === 'link' ? hit.id : null;
+      el.style.cursor = pickCallback ? 'crosshair' : hit ? 'pointer' : '';
+      if (hit?.type === 'link') {
+        const [a, b] = hit.id.split('|').map(serverById);
+        const edge = computeEdges().find((x) => x.key === hit.id);
+        const rtt = edge?.measured?.rtt;
+        tip.innerHTML = `<b>${esc(a?.name)}</b> ⟷ <b>${esc(b?.name)}</b><br/>${edge?.measured ? `<span style="color:${latencyColor(rtt)}">${rtt == null ? '中断' : fmtMs(rtt)}</span>` : `≈ ${fmtMs(edge?.estimate)}（估算）`}${edge?.link?.label ? ` · ${esc(edge.link.label)}` : ''}`;
+        tip.style.left = `${e.clientX + 14}px`;
+        tip.style.top = `${e.clientY + 12}px`;
+        tip.classList.remove('hidden');
+      } else tip.classList.add('hidden');
+    });
+  });
+  el.addEventListener('pointerleave', () => tip.classList.add('hidden'));
+}
+
+function startPick(cb) {
+  pickCallback = cb;
+  $('#pickhint').classList.remove('hidden');
+}
+function finishPick(ll) {
+  const cb = pickCallback;
+  pickCallback = null;
+  $('#pickhint').classList.add('hidden');
+  $('#globe').style.cursor = '';
+  cb?.(ll);
+}
+
+// ---------------- 动作 ----------------
+const actions = {
+  'add-server': () => openServerForm(),
+  'add-link': () => openLinkForm(store.selection?.type === 'server' ? { a: store.selection.id } : {}),
+  providers: () => openProviders(),
+  matrix: () =>
+    openMatrix({
+      onPick: (a, b) => {
+        const sel = { type: 'link', id: a < b ? `${a}|${b}` : `${b}|${a}` };
+        select(sel);
+        flyToSelection(sel);
+      },
+    }),
+  'import-export': () => openImportExport(),
+  settings: () => openSettings({ onChanged: renderDetail }),
+  'zoom-in': () => globe.zoomBy(0.5),
+  'zoom-out': () => globe.zoomBy(2),
+  'reset-view': () => {
+    select(null);
+    globe.flyTo({ alt: DEFAULT_ALT });
+  },
+};
+
+function bindActions() {
+  document.body.addEventListener('click', (e) => {
+    const a = e.target.closest('[data-action]');
+    if (a && actions[a.dataset.action]) actions[a.dataset.action]();
+    const t = e.target.closest('[data-toggle]');
+    if (t) setView({ [t.dataset.toggle]: !store.view[t.dataset.toggle] });
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.target.matches('input, textarea, select')) return;
+    if (e.key === 'Escape') {
+      if (pickCallback) return finishPick(null);
+      if (!hasOpenModal()) select(null);
+    }
+    if (hasOpenModal()) return;
+    if (e.key === '/') {
+      e.preventDefault();
+      $('#sidebar input[type=search]')?.focus();
+    }
+    if (e.key === '+' || e.key === '=') globe.zoomBy(0.6);
+    if (e.key === '-') globe.zoomBy(1.6);
+    if (e.key === 'n') openServerForm();
+  });
+}
+
+// ---------------- 启动 ----------------
+async function boot() {
+  await new Promise((r) => setTimeout(r, 30)); // 让 loading 先渲染出来（生成贴图会阻塞主线程）
+  globe = new Globe($('#globe'));
+  const labels = new LabelManager(globe);
+  markers = new Markers(globe, labels);
+  links = new Links(globe, markers, labels);
+  globe.controls.addEventListener('start', pauseAutoRotate);
+  window.np = { store, globe, markers, links, select }; // 方便在控制台调试
+
+  initSidebar({
+    onSelect: (id) => {
+      const sel = { type: 'server', id };
+      select(sel);
+      flyToSelection(sel);
+    },
+    onHover: (id) => (markers.hover = id ? { type: 'server', id } : null),
+    onAdd: () => openServerForm(),
+  });
+  initDetail({
+    onClose: () => select(null),
+    onFly: (sel) => flyToSelection(sel),
+    onSelect: (sel) => {
+      select(sel);
+      flyToSelection(sel, { zoom: sel.type !== 'server' });
+    },
+    getSite: (id) => markers.sites.get(id),
+    onEditServer: (id) => openServerForm(serverById(id)),
+    onDeleteServer: async (id) => {
+      const s = serverById(id);
+      if (!(await confirmDialog(`删除服务器「${s?.name}」及其所有连接？`, { danger: true, okText: '删除' }))) return;
+      await api('DELETE', `/api/servers/${id}`);
+      select(null);
+      toast('已删除', 'ok');
+    },
+    onAddLink: (preset) => openLinkForm(preset),
+    onEditLink: (id) => openLinkForm({ link: store.links.find((l) => l.id === id) }),
+    onDeleteLink: async (id) => {
+      if (!(await confirmDialog('删除这条连接？', { danger: true, okText: '删除' }))) return;
+      await api('DELETE', `/api/links/${id}`);
+      toast('连接已删除', 'ok');
+    },
+    onRotateToken: async (id) => {
+      if (!(await confirmDialog('重置后旧 Token 立即失效，需要在 VPS 上重新安装 Agent。继续？', { okText: '重置' }))) return;
+      await api('POST', `/api/servers/${id}/rotate-token`);
+      await loadState();
+      toast('Token 已重置', 'ok');
+    },
+  });
+  initForms({
+    pickOnGlobe: startPick,
+    onSaved: (srv, isNew) => {
+      if (!isNew) return;
+      // 等 SSE 触发的重新加载完成后再选中
+      setTimeout(() => {
+        const sel = { type: 'server', id: srv.id };
+        select(sel);
+        flyToSelection(sel);
+      }, 400);
+    },
+  });
+  bindPointer();
+  bindActions();
+  applyView();
+
+  await loadState();
+  connectStream();
+  $('#loading').classList.add('done');
+  setTimeout(() => $('#loading').remove(), 600);
+}
+
+boot().catch((e) => {
+  console.error(e);
+  $('#loading span').textContent = `启动失败：${e.message}`;
+});

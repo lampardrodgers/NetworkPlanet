@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Network Planet</title>
+  </head>
+  <body>
+    <div id="globe"></div>
+
+    <header id="topbar">
+      <div class="brand">
+        <img src="/favicon.svg" alt="" />
+        <span>Network Planet</span>
+      </div>
+      <div id="stats" class="stats"></div>
+      <div class="actions">
+        <button class="btn primary" data-action="add-server" title="添加服务器">＋ 服务器</button>
+        <button class="btn" data-action="add-link" title="添加连接">⇄ 连接</button>
+        <button class="btn" data-action="providers" title="通过供应商 API 导入">☁ API 导入</button>
+        <button class="btn" data-action="matrix" title="互联延迟矩阵">▦ 矩阵</button>
+        <button class="btn" data-action="import-export" title="JSON 导入导出">⇅</button>
+        <button class="btn" data-action="settings" title="设置">⚙</button>
+      </div>
+    </header>
+
+    <aside id="sidebar"></aside>
+    <aside id="detail" class="hidden"></aside>
+
+    <div id="viewbar">
+      <button class="chip" data-toggle="autoRotate" title="自动旋转">⟳ 自转</button>
+      <button class="chip" data-toggle="showLinks" title="显示手动连接">⇄ 连接</button>
+      <button class="chip" data-toggle="showMesh" title="显示 Agent 实测的全部互联">✱ 实测网格</button>
+      <button class="chip" data-toggle="showLinkLabels" title="在连线上显示延迟">ms 标签</button>
+      <button class="chip" data-toggle="showLabels" title="显示服务器名称">Aa 名称</button>
+      <span class="sep"></span>
+      <button class="chip" data-action="zoom-in" title="放大">＋</button>
+      <button class="chip" data-action="zoom-out" title="缩小">－</button>
+      <button class="chip" data-action="reset-view" title="复位视角">◎</button>
+    </div>
+
+    <div id="legend">
+      <span><i style="background: var(--lat-good)"></i>&lt;60ms</span>
+      <span><i style="background: var(--lat-ok)"></i>&lt;150ms</span>
+      <span><i style="background: var(--lat-warn)"></i>&lt;250ms</span>
+      <span><i style="background: var(--lat-bad)"></i>≥250ms</span>
+      <span><i style="background: var(--muted)"></i>无数据/估算</span>
+    </div>
+
+    <div id="tooltip" class="hidden"></div>
+    <div id="pickhint" class="hidden">在地球上点击选取位置 · <kbd>Esc</kbd> 取消</div>
+    <div id="toasts"></div>
+    <div id="modal-root"></div>
+    <div id="loading"><div class="spinner"></div><span>正在生成地球…</span></div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

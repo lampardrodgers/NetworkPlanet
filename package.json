@@ -1,0 +1,26 @@
+{
+  "name": "network-planet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Three.js 3D 地球：实时展示全球 VPS 服务器位置、状态、互联延迟与带宽",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "dev:server": "node --watch-path=server --watch-path=shared server/index.js",
+    "dev:web": "vite",
+    "build": "vite build",
+    "start": "NODE_ENV=production node server/index.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "d3-geo": "^3.1.1",
+    "three": "^0.186.1",
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
+  },
+  "devDependencies": {
+    "vite": "^8.3.2"
+  }
+}
