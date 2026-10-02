@@ -178,6 +178,8 @@ let lastMode = null;
 function applyView() {
   const v = store.view;
   markers.showLabels = flat.showLabels = v.showLabels;
+  markers.expandCities = Boolean(v.expandCities);
+  $('[data-toggle=expandCities]').classList.toggle('hidden', flatOn());
   links.showLabels = flat.showLinkLabels = v.showLinkLabels;
   globe.controls.autoRotate = v.autoRotate && !store.selection;
   links.setEdges(computeEdges());

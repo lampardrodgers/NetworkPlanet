@@ -8,6 +8,7 @@ import { ping, connect, remoteBatch, parsePing, traceroute } from './probes.js';
 import { parseVless, vlessProbe } from './vless.js';
 import { classifyTrace, asnDatabase, CLASSIFIER_VERSION } from './route-analysis.js';
 import { workers } from './process.js';
+import { meshNodes, meshJobs } from './mesh.js';
 const dataDir=process.env.NP_DATA_DIR||path.resolve('data');
 const secretFile=path.join(dataDir,'local-secrets.json');
 let active=null, timer=null, nextAt=null, onChange=()=>{};
@@ -90,7 +91,11 @@ function errorRecord(job,e){record(job,{state:controller?.signal.aborted||e.mess
 export function startRound({scope,kind='latency',remote=false,auto=false}={}){
  if(!LOCAL_MODE)throw new Error('当前不是本地模式');
  if(active)return active;
- if(!['latency','route'].includes(kind))throw new Error('任务类型无效');
+ if(!['latency','route','mesh'].includes(kind))throw new Error('任务类型无效');
+ if(kind==='mesh'){
+  if(auto)throw new Error('全部 VPS 互测仅支持手动运行');
+  const nodes=meshNodes(db.servers,db.localProfiles);meshJobs(nodes);scope=nodes.map(s=>s.id);
+ }
  if(kind==='route'&&!db.settings.measurement.routeAnalysis.enabled)throw new Error('请先开启线路分析');
  if(!Array.isArray(scope)||!scope.length||scope.length>500)throw new Error('请选择测试节点');
  let selected=[...new Set(scope)].map(id=>db.servers.find(s=>s.id===id&&!s.demo));
@@ -111,11 +116,13 @@ async function execute(selected,kind,remote,auto){
  const localJobs=[],pairMap=new Map(),cfg=db.settings.measurement,profiles=structuredClone(db.localProfiles);
  const ctx=directContext(cfg);
  const wantTrace=kind==='route'||(auto&&cfg.routeAnalysis.enabled&&cfg.routeAnalysis.withAuto);
+ if(kind==='mesh')for(const job of meshJobs(selected))pairMap.set(`${job.source}|${job.target}|latency`,job);
  const addTrace=j=>{
   const old=Object.values(db.localResults).find(r=>r.kind==='route'&&r.source===j.source&&r.target===j.target&&r.address===j.address);
   if(!auto||!old||Date.now()-old.finishedAt>=cfg.routeAnalysis.refreshSec*1000)localJobs.push({...j,method:'traceroute',kind:'route'});
  };
  for(const s of selected){
+  if(kind==='mesh')continue;
   const p=profiles[s.id]||{methods:['icmp']};const endpoint=p.endpoint||{host:s.host||s.ip,port:s.probePort||22};
   if(kind==='latency')for(const method of p.methods){
    if(method==='vless'&&!cfg.proxyTests)continue;
@@ -163,6 +170,7 @@ async function execute(selected,kind,remote,auto){
    for(let i=0;i<valid.length&&!signal.aborted;i+=4){
     const out=await remoteBatch(ssh,valid.slice(i,i+4),signal,groupKind==='route',secrets().passwords?.[source]?{file:secretFile,id:source}:null,ctx);
     for(const {job,text} of out)try{
+      if(job.requirePing&&text.includes('NP_UNAVAILABLE'))throw new Error('源 VPS 没有 ping；未安装软件，也未用 TCP 替代');
       if(groupKind==='latency'&&text.includes('NP_TCP ')){
        const result=JSON.parse(text.split('NP_TCP ')[1].split('\n')[0]);
        if(!Number.isFinite(result.rtt)||result.rtt<0)throw new Error('远程 TCP 结果无效');

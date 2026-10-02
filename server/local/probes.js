@@ -59,7 +59,7 @@ export async function remoteBatch(ssh, jobs, signal, trace=false, credential=nul
     else {
       const port=Number.isInteger(j.port)&&j.port>0&&j.port<65536?j.port:22;
       const tcp="import socket,time,json; t=time.monotonic(); s=socket.create_connection(("+JSON.stringify(j.host)+","+port+"),5); print('NP_TCP '+json.dumps({'rtt':(time.monotonic()-t)*1000,'port':"+port+"})); s.close()";
-      lines.push(`if command -v ping >/dev/null 2>&1; then if [ "$os" = Darwin ]; then ping -n -c 5 -t 12 ${target}; else ping -n -c 5 -W 2 -w 12 ${target}; fi; elif command -v python3 >/dev/null 2>&1; then python3 -c ${quote(tcp)}; else printf 'NP_UNAVAILABLE: no ping or python3\\n'; fi`);
+      lines.push(`if command -v ping >/dev/null 2>&1; then if [ "$os" = Darwin ]; then ping -n -c 5 -t 12 ${target}; else ping -n -c 5 -W 2 -w 12 ${target}; fi; ${j.requirePing ? "else printf 'NP_UNAVAILABLE: ping not installed\\n'; fi" : `elif command -v python3 >/dev/null 2>&1; then python3 -c ${quote(tcp)}; else printf 'NP_UNAVAILABLE: no ping or python3\\n'; fi`}`);
     }
     lines.push(`printf '\\nNP_END_${i}\\n'`);
   });

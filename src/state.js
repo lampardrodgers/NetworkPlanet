@@ -32,7 +32,7 @@ export const store = {
 };
 
 function loadView() {
-  const def = { mode: 'flat', flatLocked: false, autoRotate: true, showLinks: true, showMesh: false, showLinkLabels: false, showLabels: true };
+  const def = { mode: 'flat', flatLocked: false, autoRotate: true, expandCities: false, showLinks: true, showMesh: false, showLinkLabels: false, showLabels: true };
   try {
     return { ...def, ...JSON.parse(localStorage.getItem('np.view') || '{}') };
   } catch {

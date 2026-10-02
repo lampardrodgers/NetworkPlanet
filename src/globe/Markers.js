@@ -42,6 +42,7 @@ export class Markers {
     this.hover = null;
     this.forcedSite = null; // 被点击展开的站点
     this.showLabels = true;
+    this.expandCities = false;
     this.time = 0;
 
     // 腿线（站点中心 → 成员）
@@ -163,7 +164,8 @@ export class Markers {
     const site = { id, lat: g.lat, lon: g.lon, normal, center, east, north, dot, pulse, label, expand: 0, servers: [] };
     site.unregister = this.labels.register({
       obj: label,
-      wanted: () => site.servers.length > 1 && site.expand < 0.5 && this.globe.isFacing(center, 0.002),
+      required: true,
+      wanted: () => this.showLabels && site.servers.length > 1 && site.expand < 0.5 && this.globe.isFacing(center, 0.002),
       priority: () => (this.selection?.id === site.id ? 2000 : 100 + site.servers.length),
     });
     return site;
@@ -184,6 +186,7 @@ export class Markers {
     const m = { server: srv, site, dot, pulse, label, pos: site.center.clone(), phase: Math.random() * Math.PI * 2, offset: [0, 0] };
     m.unregister = this.labels.register({
       obj: label,
+      required: true,
       wanted: () => {
         const single = m.site.servers.length === 1;
         const shown = single || m.site.expand > 0.5;
@@ -260,7 +263,7 @@ export class Markers {
 
     for (const site of this.sites.values()) {
       const n = site.servers.length;
-      const want = n > 1 && (auto || this.forcedSite === site.id) ? 1 : 0;
+      const want = n > 1 && (this.expandCities || auto || this.forcedSite === site.id) ? 1 : 0;
       site.expand += (want - site.expand) * Math.min(1, dt * 7);
       if (Math.abs(want - site.expand) < 0.001) site.expand = want;
 
@@ -279,7 +282,7 @@ export class Markers {
       for (const id of site.servers.map((s) => s.id)) {
         const m = this.members.get(id);
         if (!m) continue;
-        const [ox, oy] = m.offset;
+        const [ox, oy] = m.offset.map(x=>x*(this.expandCities?1.5:1));
         const e = n > 1 ? easeOut(site.expand) : 0;
         tmp.copy(site.center)
           .addScaledVector(site.east, ox * wpp * e)
