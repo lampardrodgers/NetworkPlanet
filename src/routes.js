@@ -12,8 +12,8 @@ const RELAY_COST = 2; // 每多一跳额外算 2ms（转发开销），避免为
 export function originList() {
   const o = store.settings.origin || {};
   const list = [{ key: 'local', name: o.name || '本机', group: '本机' }];
-  for (const s of store.servers) if (s.lat != null) list.push({ key: `srv:${s.id}`, name: s.name, group: '服务器' });
-  for (const t of store.settings.targets || []) if (t.enabled && t.city && CITY_BY_KEY[t.city]) list.push({ key: `tgt:${t.id}`, name: t.name, group: t.group || '检测目标' });
+  for (const s of store.servers) if (store.localMode || s.lat != null) list.push({ key: `srv:${s.id}`, name: s.name, group: '服务器' });
+  for (const t of store.localMode ? [] : store.settings.targets || []) if (t.enabled && t.city && CITY_BY_KEY[t.city]) list.push({ key: `tgt:${t.id}`, name: t.name, group: t.group || '检测目标' });
   return list;
 }
 
@@ -36,7 +36,16 @@ export function originInfo(key) {
 }
 
 /** 起点 → 某台服务器的一跳 */
+function localHop(source, target) {
+  const p = store.status.local?.profiles?.[target];
+  const methods = ['icmp','tcp'];
+  const address = serverById(target)?.host || serverById(target)?.ip;
+  const r = (store.status.local?.results || []).filter(r => r.source === source && r.target === target && r.kind === 'latency' && r.state === 'ok' && methods.includes(r.method) && (source !== 'local' || (address && r.address === address))).sort((a,b) => methods.indexOf(a.method)-methods.indexOf(b.method) || b.finishedAt-a.finishedAt)[0];
+  if (!r || r.state !== 'ok') return { rtt: null, loss: null, measured: false };
+  return {rtt:r.rtt,loss:r.loss??null,measured:true,method:r.method,stale:!!r.stale};
+}
 function firstHop(origin, toId) {
+  if (store.localMode) return localHop(origin.kind === 'local' ? 'local' : origin.id, toId);
   const to = serverById(toId);
   if (origin.kind === 'local') {
     const st = statusOf(toId);
@@ -53,6 +62,7 @@ function firstHop(origin, toId) {
 }
 
 function serverHop(a, b) {
+  if (store.localMode) return localHop(a,b);
   const m = measuredBetween(a, b);
   if (m) return { rtt: m.rtt, loss: m.loss, measured: true };
   const sa = serverById(a);
@@ -65,13 +75,16 @@ export function evalPath(origin, via, to, hopLabels = []) {
   const chain = [...via, to];
   const hops = chain.map((id, i) => {
     const h = i === 0 ? firstHop(origin, id) : serverHop(chain[i - 1], id);
-    return { from: i === 0 ? origin.key : chain[i - 1], to: id, label: hopLabels[i] || '', ...h };
+    const from=i===0?origin.key:chain[i-1];
+    const source=i===0?(origin.kind==='local'?'local':origin.id):chain[i-1];
+    const trace=(store.status.local?.results||[]).filter(r=>r.kind==='route'&&r.source===source&&r.target===id&&r.state==='ok').sort((a,b)=>b.finishedAt-a.finishedAt)[0];
+    return { from, to: id, label: (store.localMode && hopLabels[i]?.includes('VLESS') ? 'VLESS 规划 / 公网' : hopLabels[i]) || '', networks:trace?.networks||[], routeChecked:!!trace, ...h };
   });
   const down = hops.some((h) => h.measured && (h.rtt == null || h.loss >= 100));
   const total = down || hops.some((h) => h.rtt == null) ? null : hops.reduce((a, h) => a + h.rtt, 0);
   // 丢包按「至少一段丢」合成
   const loss = hops.every((h) => h.loss != null) ? 100 * (1 - hops.reduce((a, h) => a * (1 - h.loss / 100), 1)) : null;
-  return { via, to, hops, total, loss, down, measured: hops.every((h) => h.measured) };
+  return { via, to, hops, total, loss, down, measured: hops.length === 1 && hops.every((h) => h.measured) };
 }
 
 /** 只用实测数据的最短路（最多 maxVia 个中转） */
@@ -113,12 +126,12 @@ export function routePlan(originKey, { suggest = true } = {}) {
   if (!origin) return { origin: null, rows: [] };
   const rows = [];
   for (const s of store.servers) {
-    if (s.lat == null || `srv:${s.id}` === originKey) continue;
+    if (`srv:${s.id}` === originKey) continue;
     const route = (store.routes || []).find((r) => r.from === originKey && r.to === s.id) || null;
     const direct = evalPath(origin, [], s.id, route && !route.via.length ? route.hopLabels : []);
     const path = route?.via.length ? evalPath(origin, route.via, s.id, route.hopLabels) : direct;
     let sug = null;
-    if (suggest && !route?.via.length) {
+    if (!store.localMode && suggest && !route?.via.length) {
       const b = bestPath(origin, s.id);
       if (b?.via.length) {
         const p = evalPath(origin, b.via, s.id);
@@ -147,8 +160,11 @@ export function planSegments(plan, { showSuggest = true } = {}) {
         kind: kind === 'suggest' ? 'suggest' : 'manual',
         route: kind,
         measured: h.measured ? { rtt: h.rtt, loss: h.loss } : null,
-        estimate: h.rtt ?? 0,
-        link: { label: h.label },
+        estimate: h.rtt ?? null,
+        link: { label: store.localMode
+          ? h.networks?.length ? h.networks.map(n=>n.replace(/^(电信|移动|联通)\s+/, '')).join(' / ')
+            : /端到端/.test(h.label||'') ? '端到端' : /frp/i.test(h.label||'') ? 'frp' : /VLESS/.test(h.label||'') ? '公网' : '未知线路'
+          : h.label || '', compact:store.localMode },
         dests: new Set(),
         hit: { type: 'server', id: dest },
       };
@@ -159,6 +175,26 @@ export function planSegments(plan, { showSuggest = true } = {}) {
     seg.dests.add(dest);
   };
   for (const r of plan.rows) for (const h of r.path.hops) add(h, r.route?.via.length ? 'route' : 'direct', r.to);
+  if(store.localMode && plan.origin?.kind==='local') for(const row of plan.rows){
+    const srv=serverById(row.to);
+    // 有独立地址的 VPS 始终保留本机直连；中转段另画，不以中转代替 DIRECT。
+    if(row.path.via.length&&(srv?.ip||srv?.host))for(const hop of row.direct.hops)add(hop,'direct',row.to);
+    const p=store.status.local?.profiles?.[row.to];
+    if(p?.disabled||srv?.ip||srv?.host)continue;
+    const r=(store.status.local?.results||[]).filter(r=>r.source==='local'&&r.target===row.to&&r.method==='ssh-banner'&&r.address===p?.endpoint?.host&&r.port===p?.endpoint?.port).sort((a,b)=>b.finishedAt-a.finishedAt)[0];
+    if(r?.state==='ok')add({from:plan.origin.key,to:row.to,measured:true,rtt:r.rtt,stale:r.stale,label:'端到端（SSH）'},'direct',row.to);
+  }
+  if(store.localMode)for(const r of [...(store.status.local?.results||[])].sort((a,b)=>b.finishedAt-a.finishedAt)){
+    if(r.source==='local'||r.kind!=='latency'||r.state!=='ok'||!['icmp','tcp'].includes(r.method))continue;
+    if(!plan.rows.some(row=>row.path.hops.some(h=>h.from===r.target&&h.to===r.source)))continue;
+    const key=`${r.source}>${r.target}`;
+    if(segs.has(key))continue;
+    const frp=store.status.local?.profiles?.[r.source]?.managementVia?.includes(r.target);
+    // 客户端主动测服务器所得 RTT 画在实际测量方向上；不复制成相反方向的结果。
+    // 同一 frp 关系已有实测边时，不再叠加一条未测的反向规划边。
+    if(frp){const reverse=segs.get(`${r.target}>${r.source}`);if(reverse&&!reverse.measured)segs.delete(`${r.target}>${r.source}`);}
+    add({from:r.source,to:r.target,measured:true,rtt:r.rtt,stale:r.stale,method:r.method,label:frp?'frp':`反向 ${serverById(r.source)?.name} → ${serverById(r.target)?.name}`},'route',r.source);
+  }
   // 建议线路里和已有线段重合的部分（比如本机→香港）直接复用，不再叠一条虚线
   if (showSuggest) {
     for (const r of plan.rows) {

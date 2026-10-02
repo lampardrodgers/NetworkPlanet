@@ -1,3 +1,4 @@
+import { LOCAL_MODE } from './local/config.js';
 // 运行时监控状态（只在内存中，不落盘）：
 //  - Hub 探测：Hub 所在机器定时对每台服务器做 TCP connect，得到 Hub→服务器 RTT 与在线状态
 //  - Agent 上报：服务器上的 np-agent 上报 CPU/内存/磁盘/网速，以及它到其它服务器的 ping（构成互联延迟矩阵）
@@ -311,6 +312,7 @@ function simulateDemo() {
 
 let probeTimer;
 export function startMonitor() {
+  if (LOCAL_MODE) return;
   const loop = async () => {
     try {
       await probeAll();

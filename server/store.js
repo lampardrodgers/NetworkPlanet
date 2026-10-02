@@ -9,6 +9,9 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 
 const EMPTY = () => ({
   version: 1,
+  localProfiles: {},
+  localResults: {},
+  localHistory: [],
   servers: [],
   links: [],
   routes: [], // 线路模式里自定义的「起点 → 中转… → 终点」

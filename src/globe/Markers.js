@@ -67,13 +67,13 @@ export class Markers {
     // 站点聚类（贪心）
     const groups = [];
     for (const s of [...placed].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || a.id.localeCompare(b.id))) {
-      const g = groups.find((g) => haversineKm(g.lat, g.lon, s.lat, s.lon) < SITE_RADIUS_KM);
+      const g = groups.find((g) => !s.isOrigin && !g.servers[0].isOrigin && haversineKm(g.lat, g.lon, s.lat, s.lon) < SITE_RADIUS_KM);
       if (g) g.servers.push(s);
       else groups.push({ lat: s.lat, lon: s.lon, servers: [s] });
     }
     const nextSites = new Map();
     for (const g of groups) {
-      const id = `site:${g.lat.toFixed(2)},${g.lon.toFixed(2)}`;
+      const id = g.servers[0].isOrigin ? 'site:origin' : `site:${g.lat.toFixed(2)},${g.lon.toFixed(2)}`;
       let site = this.sites.get(id);
       if (!site) site = this.createSite(id, g);
       site.servers = g.servers;

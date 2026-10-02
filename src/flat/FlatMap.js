@@ -11,6 +11,8 @@
 import { geoEquirectangular, geoPath } from 'd3-geo';
 import { feature } from 'topojson-client';
 import countries from 'world-atlas/countries-50m.json';
+import { sameMapSite, clampMapLatitude } from './layout.js';
+import { showLinkLabel } from '../link-labels.js';
 import { cityName } from '../state.js';
 import { STATUS_COLORS, statusKey, latencyColor, LAT_COLORS, fmtMs, fmtMbps, providerColor } from '../format.js';
 
@@ -133,7 +135,7 @@ export class FlatMap {
     this.canvas.style.height = `${this.H}px`;
     this.v.k = clamp(this.v.k, this.kMin(), K_MAX);
     this.dirty = true;
-    if (this.locked) this.v = this.clampView({ ...this.v });
+    this.v = this.clampView({ ...this.v });
   }
 
   setLocked(on) {
@@ -215,8 +217,8 @@ export class FlatMap {
   }
   clampView(v) {
     v.k = clamp(v.k, this.kMin(), K_MAX);
-    const half = this.H / 2 / v.k;
-    v.lat = half >= 85 ? 0 : clamp(v.lat, -85 + half, 85 - half);
+    const ins = this.insets();
+    v.lat = clampMapLatitude(v.lat,this.H,v.k,ins.t,ins.b);
     if (this.locked) {
       // 左右极限：世界地图的边缘不能拉进面板之间的可视区域；图比可视区域窄时居中
       const ins = this.insets();
@@ -236,7 +238,10 @@ export class FlatMap {
     const l = side && !side.classList.contains('collapsed') ? side.getBoundingClientRect().right + 16 : 60;
     let r = 24;
     for (const el of document.querySelectorAll('#detail, #routepanel')) if (!el.classList.contains('hidden')) r = Math.max(r, this.W - el.getBoundingClientRect().left + 16);
-    return { l: Math.min(l, this.W * 0.4), r: Math.min(r, this.W * 0.45), t: 84, b: 70 };
+    const topbar = document.querySelector('#topbar')?.getBoundingClientRect();
+    const viewbar = document.querySelector('#viewbar')?.getBoundingClientRect();
+    return { l: Math.min(l, this.W * 0.4), r: Math.min(r, this.W * 0.45),
+      t: topbar ? topbar.bottom + 16 : 84, b: viewbar ? this.H - viewbar.top + 16 : 70 };
   }
 
   // ---------------- 视角 ----------------
@@ -547,7 +552,7 @@ export class FlatMap {
     pts.sort((a, b) => (b.s.id === sel) - (a.s.id === sel) || (deg[b.s.id] || 0) - (deg[a.s.id] || 0) || a.s.id.localeCompare(b.s.id));
     const groups = [];
     for (const p of pts) {
-      const g = groups.find((g) => Math.hypot(g.x - p.x, g.y - p.y) < CLUSTER_PX);
+      const g = groups.find((g) => Math.hypot(g.x - p.x, g.y - p.y) < CLUSTER_PX && sameMapSite(g.members.map(m => m.s), p.s));
       if (g) g.members.push(p);
       else groups.push({ x: p.x, y: p.y, members: [p] });
     }
@@ -556,7 +561,7 @@ export class FlatMap {
     for (const g of groups) {
       const key = g.members.map((m) => m.s.id).sort().join(',');
       const n = g.members.length;
-      const fan = n > 1 && (this.expanded === key || g.members.some((m) => m.s.id === sel) || this.v.k >= K_MAX * 0.98);
+      const fan = n > 1 && (Boolean(this.rv) || this.expanded === key || g.members.some((m) => m.s.id === sel) || this.v.k >= K_MAX * 0.98);
       if (n === 1 || fan) {
         const R = Math.max(26, 10 + n * 6);
         g.members.forEach((m, i) => {
@@ -572,9 +577,10 @@ export class FlatMap {
       }
     }
     const o = this.rv?.origin;
-    if (o && o.kind !== 'srv' && o.lat != null) {
-      const p = this.toScreen(o.lon, o.lat);
-      nodes.push({ key: '@origin', servers: [{ id: '@origin', name: o.name, lat: o.lat, lon: o.lon }], x: p.x, y: p.y, origin: o });
+    if (o && o.kind !== 'srv') {
+      const ins=this.insets();
+      const p = o.lat != null ? this.toScreen(o.lon, o.lat) : {x:ins.l+90,y:this.H-ins.b-90};
+      nodes.push({ key: '@origin', servers: [{ id: '@origin', name: o.name, lat: o.lat, lon: o.lon }], x: p.x, y: p.y, origin: o.lat == null ? {...o,sub:'本机位置未定位 · 拓扑起点'} : o });
       pos.set('@origin', p);
     } else if (o?.kind === 'srv') pos.set('@origin', pos.get(o.id));
     for (const n of nodes) {
@@ -968,10 +974,11 @@ export class FlatMap {
     // 节点本身也是障碍物
     for (const n of this.hits.nodes) placed.push({ x: n.x - n.r - 3, y: n.y - n.r - 3, w: n.r * 2 + 6, h: n.r * 2 + 6 });
     const [bl, br] = this.locked ? this.worldX() : [0, this.W];
-    const fits = (r) => r.x > Math.max(4, bl) && r.y > 4 && r.x + r.w < Math.min(this.W, br) - 4 && r.y + r.h < this.H - 4 && !placed.some((p) => r.x < p.x + p.w && r.x + r.w > p.x && r.y < p.y + p.h && r.y + r.h > p.y);
+    const ins = this.insets();
+    const fits = (r) => r.x > Math.max(ins.l, bl) && r.y > ins.t && r.x + r.w < Math.min(this.W - ins.r, br) && r.y + r.h < this.H - ins.b && !placed.some((p) => r.x < p.x + p.w && r.x + r.w > p.x && r.y < p.y + p.h && r.y + r.h > p.y);
     const items = [];
     const TF = `600 13px ${FONT}`;
-    const SF = `11.5px ${FONT}`;
+    const SF = `12px ${FONT}`;
     const LF = `600 11.5px ${MONO}`;
 
     for (const n of nodes) {
@@ -987,7 +994,7 @@ export class FlatMap {
       } else if (n.cluster) {
         const names = n.servers.map((s) => s.name);
         title = names.length <= 3 && names.join(' / ').length <= 26 ? names.join(' / ') : `${names.slice(0, 2).join(' / ')} 等 ${names.length} 台`;
-        const city = cityName(n.servers[0].city);
+        const city = [...new Set(n.servers.map(s => cityName(s.city) || '位置待确认'))].join(' / ');
         sub = [city, `${n.servers.length} 台`, n.offline ? `${n.offline} 台离线` : ''].filter(Boolean).join(' · ');
         if (n.offline) subColor = STATUS_COLORS.offline;
       } else {
@@ -999,14 +1006,14 @@ export class FlatMap {
         if (key === 'offline') subColor = STATUS_COLORS.offline;
         const info = this.rv?.info.get(s.id);
         if (info) {
-          sub = info.text;
+          sub = [cityName(s.city), info.text].filter(Boolean).join(' · ');
           subColor = info.color;
         }
       }
       const tw = this.measure(title, TF);
       const sw = sub ? this.measure(sub, SF) : 0;
-      const w = Math.max(tw, sw);
-      const h = sub ? 32 : 17;
+      const w = Math.max(tw, sw) + 14;
+      const h = sub ? 39 : 24;
       for (const off of this.copies(n.x, n.x)) {
         items.push({
           kind: 'node',
@@ -1026,14 +1033,13 @@ export class FlatMap {
     for (const a of arcs) {
       if (a.dim) continue;
       const e = a.e;
-      if (a.mesh && !a.hl && !this.showLinkLabels) continue;
-      if (this.rv && !a.hl && !e.link?.label && !this.showLinkLabels) continue;
+      if (!showLinkLabel(e,this.showLinkLabels)) continue;
       const m = e.measured;
-      const rtt = a.down ? '中断' : m ? fmtMs(m.rtt) : `≈${fmtMs(e.estimate)}`;
-      const parts = [e.kind === 'suggest' ? '建议' : '', e.link?.label, rtt, a.hl && a.mbps ? fmtMbps(a.mbps) : '', a.hl && m?.loss ? `丢包 ${m.loss.toFixed(1)}%` : ''].filter(Boolean);
+      const rtt = a.down ? '中断' : m ? fmtMs(m.rtt) : e.estimate == null ? '未测' : `≈${fmtMs(e.estimate)}`;
+      const parts = (e.link?.compact ? [e.link.label,rtt] : [e.kind === 'suggest' ? '建议' : '', e.link?.label, rtt, a.hl && a.mbps ? fmtMbps(a.mbps) : '', a.hl && m?.loss ? `丢包 ${m.loss.toFixed(1)}%` : '']).filter(Boolean);
       const text = parts.join(' · ');
       const w = this.measure(text, LF) + 22;
-      items.push({ kind: 'link', pr: (a.hl ? 5000 : 0) + (e.link?.label ? 60 : 30), a, text, w, h: 22, hit: { type: 'link', id: e.key } });
+      items.push({ kind: 'link', pr: (a.hl ? 5000 : 0) + (e.link?.label ? 140 : 110), a, text, w, h: 22, hit: { type: 'link', id: e.key } });
     }
     items.sort((a, b) => b.pr - a.pr);
     this.hits.labels = [];
@@ -1055,21 +1061,43 @@ export class FlatMap {
             break;
           }
         }
+        // 相邻城市仍保留各自坐标；标签向外避让，用引线关联到真实位置。
+        if (!r) for (const dy of [-46, 46, -92, 92, -138, 138]) {
+          for (const side of ['r', 'l']) {
+            const rr = { x: side === 'r' ? it.x + pad : it.x - pad - it.w, y: it.y + dy - it.h / 2, w: it.w, h: it.h };
+            if (fits(rr)) { r = { ...rr, align: side, leader: true }; break; }
+          }
+          if (r) break;
+        }
         if (!r && it.pr >= 1e4) r = { x: it.x + pad, y: it.y - 15, w: it.w, h: it.h, align: 'r' };
         if (!r) continue;
         placed.push(r);
+        if (r.leader) {
+          g.strokeStyle = '#9fb8d7';
+          g.lineWidth = 1;
+          g.beginPath();
+          g.moveTo(it.x, it.y);
+          g.lineTo(clamp(it.x, r.x, r.x + r.w), clamp(it.y, r.y, r.y + r.h));
+          g.stroke();
+        }
         const left = r.align === 'l';
-        const tx = left ? r.x + r.w : r.align === 't' || r.align === 'b' ? r.x + r.w / 2 : r.x;
+        const tx = left ? r.x + r.w - 7 : r.align === 't' || r.align === 'b' ? r.x + r.w / 2 : r.x + 7;
+        g.fillStyle = '#0b1628';
+        roundRect(g, r.x, r.y, r.w, r.h, 6);
+        g.fill();
+        g.strokeStyle = '#3b506b';
+        g.lineWidth = 1;
+        g.stroke();
         g.textAlign = left ? 'right' : r.align === 't' || r.align === 'b' ? 'center' : 'left';
         g.shadowColor = 'rgba(0,0,0,0.9)';
         g.shadowBlur = 6;
         g.font = TF;
         g.fillStyle = '#f1f5fb';
-        g.fillText(it.title, tx, r.y + 13);
+        g.fillText(it.title, tx, r.y + 16);
         if (it.sub) {
           g.font = SF;
-          g.fillStyle = it.subColor || 'rgba(159,179,204,0.85)';
-          g.fillText(it.sub, tx, r.y + 29);
+          g.fillStyle = it.subColor || '#cbd5e1';
+          g.fillText(it.sub, tx, r.y + 32);
         }
         g.shadowBlur = 0;
       } else {
@@ -1090,7 +1118,7 @@ export class FlatMap {
         if (!r) continue;
         placed.push(r);
         const c = it.a.color;
-        g.fillStyle = 'rgba(6,12,24,0.92)';
+        g.fillStyle = '#101f35';
         roundRect(g, r.x, r.y, r.w, r.h, r.h / 2);
         g.fill();
         g.strokeStyle = hexA(c, it.a.hl ? 0.95 : 0.7);
@@ -1098,7 +1126,7 @@ export class FlatMap {
         g.stroke();
         g.font = LF;
         g.textAlign = 'center';
-        g.fillStyle = c;
+        g.fillStyle = it.a.e.measured ? c : '#e2e8f0';
         g.fillText(it.text, r.x + r.w / 2, r.y + 15);
       }
       this.hits.labels.push({ ...r, hit: it.hit });

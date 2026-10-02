@@ -13,6 +13,16 @@ Network Planet：Three.js 3D 地球，实时展示用户的全球 VPS（位置�
 
 UI 文案、注释、文档统一用**简体中文**。
 
+## 本地测量与新增节点（0.3.0）
+
+- 涉及本地监控、延迟测试、线路识别、VLESS、frp 或 SSH 按需测量时，先读 [本地测量方案](docs/LOCAL_MONITORING_PLAN.md)。该文档列出实现、数据格式与实测限制。
+- 用户要求新增、导入、配置 VPS / 中转 / VLESS / frp 节点时，无论改动位于哪个目录，都必须先读并遵循 [节点接入流程](docs/node-onboarding/AGENTS.md)。不要依赖嵌套 AGENTS.md 的目录作用域自动加载。
+- 新模式只在用户指定的本地电脑运行。VPS 不要求安装常驻 np-agent；远程测量由本地程序通过 SSH 执行有界命令，完成后退出。
+- 延迟测试默认手动。线路分析有独立开关，初始关闭。打开线路分析不启动自动任务。只有用户明确开启自动测试并设置周期后，程序才按周期运行；后续测量不依赖智能体。
+- 新增节点不启动测试、不改变已有调度、不安装常驻探针。用户明确要求验证时才运行对应的一轮测试。读取接入配置所需的 SSH 连接不等同于延迟测试。
+- 当前默认 `NP_MODE=local`，只监听回环地址；旧 Hub 自动 TCP、自动带宽和告警评估需要 `NP_MODE=legacy`。主机实际连通性必须与本地模拟测试区分。
+- 本地测量代码位于 `server/local/`，界面位于 `src/ui/local.js`。`npm test` 使用本地测试服务和模拟 SSH，不访问用户 VPS。
+
 ## 常用命令
 
 ```bash
@@ -22,7 +32,7 @@ npm run build    # 构建到 dist/
 npm start        # 生产模式，Hub 托管 dist/，访问 :50000
 ```
 
-没有单元测试框架。改动后至少做到：
+本地测量使用 Node 内置测试运行器（`npm test`）。改动后至少做到：
 
 1. `npm run build` 无报错
 2. 启动 Hub，`curl localhost:50000/api/state`、`/api/status` 正常
@@ -78,7 +88,7 @@ Agent 上报（/api/agent/*）┴─> server/monitor.js（内存）──SSE sta
 - 陆地掩膜来自 countries-50m（4096×2048，首次进入平面时生成）。点阵底图缓存在离屏 canvas，`dirty` 时才重画（视角 / 数据变化，晨昏线每分钟一次）。
 - 默认 `fitWorld()` 显示整张世界地图（`worldK()` = 刚好放进面板之间的缩放，`kMin` = 它 × 0.85）；中心经度按「接缝经线切断的连线最少、尽量落在海上」选，线路模式以起点经度为中心。
 - 锁定模式（`store.view.flatLocked` → `setLocked`）：只有一份世界（`worldCenter` ± 180°），仍可缩放拖动，由 `clampView` 把左右边缘限制在面板之间的可视区域外，`kMin` = `worldK()`；`unwrap` 以 `worldCenter` 为准，连线和节点裁剪在 `worldX()` 这一份世界里，`flyTo` 不走「经度近路」。
-- 节点按屏幕距离聚类（`CLUSTER_PX`）；选中的、`expanded` 的，或已到最大缩放的簇会环形展开。标签和连线胶囊统一按优先级贪心避让（`drawLabels`）。
+- 节点聚合同时受屏幕距离（`CLUSTER_PX`）与 25km 地理范围约束，不跨国家合并。标签显示所有成员城市，不能用第一台的城市代表其他地点；选中的、`expanded` 的，或已到最大缩放的簇会环形展开。标签和连线胶囊统一按优先级贪心避让（`drawLabels`）。
 - 线路模式下 `setRouteView({ origin, segments, info })` 取代普通连线。线段的 `a` 可以是 `'@origin'`，`dests` 记录经过它的终点（用于高亮），`hit` 让点击线段时选中终点。
 - 后端：`db.routes` `[{ id, from: 'local'|'srv:<id>'|'tgt:<id>', to, via[], label, hopLabels[] }]`，接口是 `POST/PUT/DELETE /api/routes`，同一个起点和终点只保留一条。本机位置存在 `settings.origin`，由 `normalizeOrigin` 清洗。
 

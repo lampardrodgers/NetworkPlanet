@@ -42,7 +42,7 @@ export function openServerForm(existing = null) {
             <button type="button" class="btn sm" data-pick>在地球上选点</button>
           </div>
         </div>
-        <p class="hint">只填 IP 也可以，保存时会自动按 IP 定位；同城多台机器会在地球上聚合，放大后散开。</p>
+        <p class="hint">${store.localMode ? '点击「按 IP 定位」查询约略位置；内网设备请填写实际城市。' : '只填 IP 也可以，保存时会自动按 IP 定位。'}同城多台机器会聚合，放大或点击后展开。</p>
       </fieldset>
       <fieldset>
         <legend>配置</legend>

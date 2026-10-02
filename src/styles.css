@@ -7,7 +7,7 @@
   --border-strong: rgba(125, 211, 252, 0.32);
   --text: #e2ecf8;
   --text-2: #9fb3cc;
-  --muted: #64748b;
+  --muted: #a2b4cb;
   --accent: #38bdf8;
   --accent-2: #5eead4;
   --ok: #34d399;
@@ -709,3 +709,20 @@ tr.ev:hover td { background: rgba(56, 189, 248, 0.06); }
 @media (max-width: 800px) {
   #routepanel { left: 12px; width: auto; top: auto; height: 45vh; }
 }
+
+/* 本地测量：表格随内容滚动，编辑配置不随状态推送重绘。 */
+.local-scope{max-height:260px;overflow:auto;border:1px solid var(--border,#26364a);border-radius:8px;padding:8px}
+.local-node{display:flex;align-items:center;gap:10px;padding:8px;border-bottom:1px solid #ffffff12;flex-wrap:wrap}
+.local-node>span{font-size:11px;opacity:.7;flex:1}.local-node .check{min-width:160px}
+.local-progress{margin:16px 0;color:#79d7d0}.local-results{overflow:auto;max-height:380px}
+.local-table{width:100%;border-collapse:collapse;font-size:12px}.local-table th,.local-table td{text-align:left;padding:10px;border-bottom:1px solid #ffffff18;vertical-align:top}
+.local-table small{display:block;opacity:.65;margin-top:4px}.local-table pre{white-space:pre-wrap;max-width:500px;overflow-wrap:anywhere;font-size:10px}
+.local-picks{display:flex;gap:10px;flex-wrap:wrap;max-height:110px;overflow:auto}.local-picks .check{font-size:12px}
+
+/* 独立于地理坐标的节点计数与待定位区，不为未知设备伪造地图坐标。 */
+#map-placement { position: absolute; z-index: 8; top: 96px; left: 50%; transform: translateX(-50%); max-width: min(440px, 34vw); padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--muted); font-size: 12px; }
+#map-placement details { margin-top: 8px; }
+#map-placement summary { cursor: pointer; color: #fbbf24; }
+#map-placement details div { display: flex; gap: 8px; flex-wrap: wrap; margin: 9px 0; }
+#map-placement small { line-height: 1.6; }
+@media (max-width: 800px) { #map-placement { top: 120px; max-width: 90vw; width: max-content; } }

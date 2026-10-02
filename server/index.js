@@ -1,3 +1,5 @@
+import { LOCAL_MODE } from './local/config.js';
+import { getMeasurement, putProfile, configureMeasurement, startRound, stopRound, reschedule, onMeasurement, shutdownMeasurement } from './local/engine.js';
 // Network Planet Hub：REST API + SSE 实时推送 + 静态文件（生产模式下托管 dist/）。
 // 只用 Node 内置模块，零后端依赖。
 import http from 'node:http';
@@ -23,14 +25,14 @@ import { seedDemo, clearDemo } from './demo.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT || 50000);
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = LOCAL_MODE ? '127.0.0.1' : (process.env.HOST || '0.0.0.0');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const IS_PROD = process.env.NODE_ENV === 'production';
 // 当前 Agent 版本（从脚本里读），前端据此提示「需要升级」
 const AGENT_VERSION = (fs.readFileSync(path.join(ROOT, 'agent', 'np-agent.sh'), 'utf8').match(/^VERSION="([^"]+)"/m) || [])[1] || '';
 
 // 首次启动且库为空时自动灌入演示数据（NP_DEMO=0 关闭）
-if (process.env.NP_DEMO !== '0' && db.servers.length === 0 && !db.settings.demoSeededOnce) {
+if (!LOCAL_MODE && process.env.NP_DEMO !== '0' && db.servers.length === 0 && !db.settings.demoSeededOnce) {
   seedDemo();
   db.settings.demoSeededOnce = true;
   save();
@@ -96,10 +98,12 @@ function publicSettings() {
 }
 
 function publicState() {
+  const visible = new Set(db.servers.filter(s => !LOCAL_MODE || !s.demo).map(s => s.id));
   return {
-    servers: db.servers,
-    links: db.links,
-    routes: db.routes,
+    servers: db.servers.filter(s => !LOCAL_MODE || !s.demo).map(({agentToken, machineId, ...s}) => s),
+    localMode: LOCAL_MODE,
+    links: db.links.filter(l => visible.has(l.a) && visible.has(l.b)),
+    routes: db.routes.filter(r => visible.has(r.to) && r.via.every(id => visible.has(id))),
     accounts: db.accounts.map(publicAccount),
     providers: providerMeta(),
     settings: publicSettings(),
@@ -112,7 +116,21 @@ function publicState() {
 const statusPayload = () => {
   const snap = snapshot();
   for (const id of Object.keys(snap.servers)) snap.servers[id].poll = agentConnected(id);
-  return { ...snap, alerts: activeAlerts() };
+  const local = LOCAL_MODE ? getMeasurement() : null;
+  if (local) {
+    const visible = new Set(db.servers.filter(s => !s.demo).map(s => s.id));
+    for (const id of Object.keys(snap.servers)) {
+      if (!visible.has(id)) { delete snap.servers[id]; continue; }
+      const latest = local.results.filter(r => r.source === 'local' && r.target === id && r.kind === 'latency' && r.transport !== 'proxy').sort((a,b) => b.finishedAt-a.finishedAt);
+      // 手动结果不因网页开了五分钟而消失；明确作为上次测试状态展示。
+      const current = local.config.mode === 'manual' ? latest : latest.filter(r=>!r.stale);
+      snap.servers[id].online = current.length ? current.some(r => r.state === 'ok') : null;
+      snap.servers[id].measurementStale = !!latest[0]?.stale;
+      snap.servers[id].lastCheckedAt = latest[0]?.finishedAt || null;
+      snap.servers[id].hubRtt = (latest.find(r => r.method === 'icmp' && r.state === 'ok') || latest.find(r => r.method === 'tcp' && r.state === 'ok'))?.rtt ?? null;
+    }
+  }
+  return { ...snap, local, alerts: activeAlerts() };
 };
 
 /** 统一的定位逻辑：显式坐标 > 供应商 region > 城市名 > IP 地理定位 */
@@ -139,6 +157,7 @@ function broadcast(event, data) {
   for (const res of clients) res.write(msg);
 }
 const changed = (what) => broadcast('changed', { what, ts: Date.now() });
+onMeasurement(() => broadcast('status', statusPayload()));
 setInterval(() => clients.size && broadcast('status', statusPayload()), 3000);
 onTaskUpdate((t) => broadcast('task', t));
 onAlertEvent((ev) => broadcast('alert', ev));
@@ -162,6 +181,11 @@ const findServer = (id) => {
 
 route('GET', '/api/state', () => publicState());
 route('GET', '/api/status', () => statusPayload());
+route('GET', '/api/local', () => getMeasurement());
+route('PUT', '/api/local/config', (req,res,{body}) => { try { const out=configureMeasurement(body); changed('measurement'); return out; } catch(e) { throw new HttpError(400,e.message); } });
+route('PUT', '/api/local/profiles/:id', (req,res,{params,body}) => { try { const out=putProfile(params.id,body); changed('profiles'); return out; } catch(e) { throw new HttpError(400,e.message); } });
+route('POST', '/api/local/rounds', (req,res,{body}) => { try { return startRound(body); } catch(e) { throw new HttpError(400,e.message); } });
+route('POST', '/api/local/stop', () => stopRound());
 
 route('GET', '/api/stream', (req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -174,10 +198,10 @@ route('GET', '/api/stream', (req, res) => {
 // ---- 服务器 CRUD ----
 route('POST', '/api/servers', async (req, res, { body }) => {
   const srv = normalizeServer(body);
-  if (!srv.ip && !srv.host && srv.lat == null && !srv.city) throw new HttpError(400, '至少需要 IP / 域名或位置');
-  const loc = await resolveLocation(srv, srv.provider);
+  if (!LOCAL_MODE && !srv.ip && !srv.host && srv.lat == null && !srv.city) throw new HttpError(400, '至少需要 IP / 域名或位置');
+  const loc = await resolveLocation(srv, srv.provider, { allowGeoip: !LOCAL_MODE });
   if (loc) Object.assign(srv, loc);
-  if (srv.lat == null) throw new HttpError(400, '无法确定位置：请填写城市或经纬度');
+  if (!LOCAL_MODE && srv.lat == null) throw new HttpError(400, '无法确定位置：请填写城市或经纬度');
   srv.id = newId('srv');
   srv.agentToken = newToken();
   srv.createdAt = Date.now();
@@ -195,6 +219,7 @@ route('PUT', '/api/servers/:id', async (req, res, { params, body }) => {
     const loc = await resolveLocation(
       { ...next, lat: body.lat !== undefined ? next.lat : null, lon: body.lon !== undefined ? next.lon : null },
       next.provider,
+      { allowGeoip: !LOCAL_MODE },
     );
     if (loc) Object.assign(next, loc, { locSource: body.lat != null ? 'manual' : loc.locSource });
   }
@@ -205,11 +230,30 @@ route('PUT', '/api/servers/:id', async (req, res, { params, body }) => {
   return old;
 });
 
+// 明确请求才查询公网地址；不使用 frp 管理入口替代设备位置。
+route('POST', '/api/servers/:id/locate', async (req, res, { params, body }) => {
+  const srv = findServer(params.id);
+  const egressIp = body.egressIp;
+  if (egressIp !== undefined && (typeof egressIp !== 'string' || !net.isIP(egressIp))) throw new HttpError(400, '出口 IP 格式不正确');
+  if (!egressIp && !srv.ip && !srv.host) throw new HttpError(400, '设备没有独立公网地址，请填写实际城市');
+  const g = await geoLookup(egressIp || srv.ip || srv.host);
+  if (!g || !Number.isFinite(g.lat) || !Number.isFinite(g.lon)) throw new HttpError(404, 'IP 定位失败');
+  Object.assign(srv, { lat: g.lat, lon: g.lon, city: g.city, country: g.country, locSource: egressIp ? 'egress-geoip' : 'geoip', locIp: egressIp || g.ip, locProvider: 'ip-api.com', locUpdatedAt: Date.now() });
+  save();
+  changed('servers');
+  return { id: srv.id, lat: srv.lat, lon: srv.lon, city: srv.city, country: srv.country, locSource: srv.locSource };
+});
+
 route('DELETE', '/api/servers/:id', (req, res, { params }) => {
   findServer(params.id);
   db.servers = db.servers.filter((s) => s.id !== params.id);
   db.links = db.links.filter((l) => l.a !== params.id && l.b !== params.id);
   db.routes = db.routes.filter((r) => r.to !== params.id && r.from !== `srv:${params.id}` && !r.via.includes(params.id));
+  delete db.localProfiles[params.id];
+  db.settings.measurement.scope = db.settings.measurement.scope.filter(id => id !== params.id);
+  if (!db.settings.measurement.scope.length) db.settings.measurement.mode = 'manual';
+  for (const p of Object.values(db.localProfiles)) for (const k of ['managementVia','businessVia']) p[k] = (p[k] || []).filter(id => id !== params.id);
+  reschedule();
   forget(params.id);
   save();
   changed('servers');
@@ -272,7 +316,7 @@ route('POST', '/api/import', async (req, res, { body }) => {
   const skipped = [];
   for (const raw of list) {
     const srv = normalizeServer(raw);
-    const loc = await resolveLocation(srv, srv.provider);
+    const loc = await resolveLocation(srv, srv.provider, { allowGeoip: !LOCAL_MODE });
     if (!loc) {
       skipped.push(srv.name);
       continue;
@@ -779,6 +823,15 @@ function serveStatic(req, res, url) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
+    if (LOCAL_MODE) {
+      const h = new URL(`http://${req.headers.host || 'localhost'}`).hostname;
+      if (!['localhost','127.0.0.1','[::1]'].includes(h)) throw new HttpError(403, '只允许本地访问');
+      if (req.headers.origin) {
+        const origin = new URL(req.headers.origin);
+        if (!['http:','https:'].includes(origin.protocol) || !['localhost','127.0.0.1','[::1]'].includes(origin.hostname)) throw new HttpError(403, '不允许跨站访问本地服务');
+      }
+      if (['POST','PUT','DELETE'].includes(req.method) && req.headers['sec-fetch-site'] === 'cross-site') throw new HttpError(403, '不允许跨站操作');
+    }
     if (!url.pathname.startsWith('/api/')) return serveStatic(req, res, url);
     const r = routes.find((x) => x.method === req.method && x.re.test(url.pathname));
     if (!r) throw new HttpError(404, '接口不存在');
@@ -798,11 +851,16 @@ server.listen(PORT, HOST, () => {
   console.log(`[network-planet] Hub 已启动 http://localhost:${PORT}${ADMIN_TOKEN ? '（已启用 ADMIN_TOKEN）' : ''}`);
   startHistory(new Set(db.servers.map((s) => s.id)));
   startMonitor();
-  startAlerts();
+  if (!LOCAL_MODE) startAlerts();
+  reschedule();
 });
 
+let shuttingDown = false;
 for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => {
+  process.on(sig, async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await Promise.race([shutdownMeasurement(), new Promise(resolve => setTimeout(resolve, 5000))]);
     flush();
     flushHistory();
     process.exit(0);

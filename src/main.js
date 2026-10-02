@@ -1,3 +1,4 @@
+import { openLocalMonitor } from './ui/local.js';
 // 入口：把 Hub 数据、3D 地球、各 UI 面板串起来。
 import './styles.css';
 import * as THREE from 'three';
@@ -29,14 +30,26 @@ const routeOn = () => store.view.mode === 'route';
 
 /** 线路模式：重新规划并交给平面视图；refit 时把起点和所有服务器框进视野 */
 function refreshRoutes({ refit = false } = {}) {
-  if (!routeOn()) return flat.setRouteView(null);
+  if (!routeOn() && !store.localMode) return flat.setRouteView(null);
   const rv = routeView();
+  if(store.localMode){
+    store.localEdges=rv.segments.map(e=>({...e,a:e.a==='@origin'&&rv.origin?.kind==='srv'?rv.origin.id:e.a}));
+    links.setEdges(computeEdges());
+    flat.setEdges(computeEdges());
+    markers.setData(mapServers(rv.origin),store.status.servers);
+    if(!store.view.showLinks)rv.segments=[];
+  }
   flat.setRouteView(rv);
-  renderRoutePanel(rv.plan);
+  if(routeOn())renderRoutePanel(rv.plan);
   if (refit) {
     // 整张世界地图，以起点为中心（和弧线「走近路」的方向一致）
     flat.fitWorld({ around: rv.origin?.lon ?? null });
   }
+}
+
+function mapServers(origin=store.settings.origin){
+ if(!store.localMode||!Number.isFinite(origin?.lat)||origin?.kind==='srv')return store.servers;
+ return [...store.servers,{id:'@origin',name:origin.name||'本机',city:origin.name||'本机',lat:origin.lat,lon:origin.lon,isOrigin:true}];
 }
 
 // ---------------- 数据 ----------------
@@ -45,6 +58,7 @@ async function loadState() {
     const s = await api('GET', '/api/state');
     Object.assign(store, {
       servers: s.servers,
+      localMode: s.localMode,
       links: s.links,
       routes: s.routes || [],
       accounts: s.accounts,
@@ -54,6 +68,13 @@ async function loadState() {
       hubTz: s.hubTz ?? 0,
       authRequired: s.authRequired,
     });
+    document.querySelector('[data-action=install]')?.classList.toggle('hidden', !!s.localMode);
+    document.querySelector('[data-action=local-monitor]')?.classList.toggle('hidden', !s.localMode);
+    try {
+      if(s.localMode&&!localStorage.getItem('np.localLinksV1')){
+        localStorage.setItem('np.localLinksV1','1');setView({showLinks:true,showLinkLabels:true});
+      }
+    } catch {}
     store.emit('data');
   } catch (e) {
     if (e.status === 401) {
@@ -105,7 +126,7 @@ function connectStream() {
 
 // ---------------- 状态 → 视图 ----------------
 store.on('data', () => {
-  markers.setData(store.servers, store.status.servers);
+  markers.setData(mapServers(), store.status.servers);
   links.setEdges(computeEdges());
   flat.setData(store.servers, store.status.servers);
   flat.setEdges(computeEdges());
@@ -117,7 +138,16 @@ store.on('data', () => {
   renderStats();
   renderDetail();
   refreshProviders();
+  renderMapPlacement();
 });
+
+function renderMapPlacement() {
+  const el = $('#map-placement');
+  const missing = store.servers.filter(s => !Number.isFinite(s.lat) || !Number.isFinite(s.lon));
+  const approximate = store.servers.filter(s => ['geoip', 'egress-geoip'].includes(s.locSource)).length;
+  el.innerHTML = `<span>地图已定位 ${store.servers.length - missing.length} / ${store.servers.length}${approximate ? ` · ${approximate} 台为 IP 约略位置` : ''}</span>${missing.length ? `<details open><summary>位置待确认 · ${missing.length} 台（未放入地图）</summary><div>${missing.map(s => `<button class="chip" data-unplaced="${esc(s.id)}">${esc(s.name)}</button>`).join('')}</div><small>点击节点补充实际城市。中转入口的位置不代表设备位置。</small></details>` : ''}`;
+  el.querySelectorAll('[data-unplaced]').forEach(button => button.onclick = () => openServerForm(serverById(button.dataset.unplaced)));
+}
 
 store.on('status', () => {
   markers.refreshStatus(store.status.servers);
@@ -228,6 +258,7 @@ function bindPointer() {
       return;
     }
     const hit = pickAt(e.clientX, e.clientY);
+    if(hit?.id==='@origin')return;
     if (hit) {
       select({ type: hit.type, id: hit.id });
       if (hit.type === 'site') flyToSelection(hit);
@@ -242,6 +273,7 @@ function bindPointer() {
   globe.labelRenderer.domElement.addEventListener('click', (e) => {
     const l = e.target.closest('.np-label');
     if (!l || pickCallback) return;
+    if(l.dataset.server==='@origin')return;
     if (l.dataset.server) select({ type: 'server', id: l.dataset.server });
     else if (l.dataset.site) {
       select({ type: 'site', id: l.dataset.site });
@@ -311,6 +343,7 @@ const actions = {
       },
     }),
   'import-export': () => openImportExport(),
+  'local-monitor': () => openLocalMonitor(),
   settings: () => openSettings({ onChanged: renderDetail }),
   install: () => openInstall(),
   events: () => openEvents({ onSelect: (id) => { const sel = { type: 'server', id }; select(sel); flyToSelection(sel); } }),

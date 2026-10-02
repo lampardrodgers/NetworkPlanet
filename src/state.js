@@ -32,7 +32,7 @@ export const store = {
 };
 
 function loadView() {
-  const def = { mode: 'globe', flatLocked: false, autoRotate: true, showLinks: true, showMesh: false, showLinkLabels: false, showLabels: true };
+  const def = { mode: 'flat', flatLocked: false, autoRotate: true, showLinks: true, showMesh: false, showLinkLabels: false, showLabels: true };
   try {
     return { ...def, ...JSON.parse(localStorage.getItem('np.view') || '{}') };
   } catch {
@@ -102,6 +102,7 @@ export const alertsOf = (id) => (store.status.alerts || []).filter((x) => x.serv
  * 返回 [{ key, a, b, link?, measured?, estimate, rtt, kind }]
  */
 export function computeEdges() {
+  if(store.localMode)return store.view.showLinks?(store.localEdges||[]):[];
   const out = [];
   const seen = new Set();
   const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);

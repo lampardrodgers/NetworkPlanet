@@ -1,5 +1,5 @@
 // 格式化 & 配色工具
-export const LAT_COLORS = { good: '#34d399', ok: '#a3e635', warn: '#fbbf24', bad: '#fb7185', none: '#64748b' };
+export const LAT_COLORS = { good: '#34d399', ok: '#a3e635', warn: '#fbbf24', bad: '#fb7185', none: '#b8c9df' };
 export const STATUS_COLORS = { online: '#34d399', offline: '#fb7185', unknown: '#94a3b8' };
 
 export function latencyColor(ms) {

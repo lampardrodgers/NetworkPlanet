@@ -8,6 +8,7 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { latencyColor, fmtMs, fmtMbps, LAT_COLORS, esc } from '../format.js';
+import { showLinkLabel } from '../link-labels.js';
 
 const SEG = 64; // 每条弧固定段数，方便原地更新缓冲区
 const MAX_PULSES = 2000;
@@ -70,6 +71,10 @@ export class Links {
       if (!obj) obj = this.createEdge(e);
       obj.data = e;
       this.styleEdge(obj);
+      if (!showLinkLabel(e,this.showLabels)) {
+        obj.label.visible = false;
+        obj.label.element.style.display = 'none';
+      }
       next.set(e.key, obj);
     }
     for (const [k, obj] of this.edges) if (!next.has(k)) this.disposeEdge(obj);
@@ -87,15 +92,17 @@ export class Links {
 
     const el = document.createElement('div');
     el.className = 'np-label np-link';
-    el.dataset.link = e.key;
+    if(e.hit?.type==='server')el.dataset.server=e.hit.id;else el.dataset.link = e.key;
     const label = new CSS2DObject(el);
+    label.visible = false;
+    el.style.display = 'none';
     label.center.set(0.5, 1.3);
     this.root.add(label);
 
     const obj = { data: e, line, label, pts: new Float32Array((SEG + 1) * 3), lastA: new THREE.Vector3(), lastB: new THREE.Vector3(Infinity, 0, 0), visible: false, t: Math.random() };
     obj.unregister = this.labels.register({
       obj: label,
-      wanted: () => obj.visible && obj.labelPos && this.globe.isFacing(obj.labelPos, 0) && (this.showLabels || this.isHighlighted(obj)),
+      wanted: () => showLinkLabel(obj.data,this.showLabels) && obj.visible && obj.labelPos && this.globe.isFacing(obj.labelPos, 0),
       priority: () => (this.selectedKey === obj.data.key ? 2800 : this.hoverKey === obj.data.key ? 2600 : this.isHighlighted(obj) ? 400 : 10),
     });
     return obj;
@@ -125,12 +132,14 @@ export class Links {
     obj.down = down;
     // 光点数量随吞吐增加；旅行时间随延迟增加
     const mbps = m?.mbps ?? e.link?.bandwidthMbps ?? null;
-    obj.pulseCount = down ? 0 : mbps ? THREE.MathUtils.clamp(Math.round(1 + Math.log10(mbps + 1) * 0.9), 1, 4) : 1;
+    obj.pulseCount = down || !m ? 0 : mbps ? THREE.MathUtils.clamp(Math.round(1 + Math.log10(mbps + 1) * 0.9), 1, 4) : 1;
     const rtt = m?.rtt ?? e.estimate;
     obj.travel = 0.9 + rtt / 70; // 秒
-    const rttText = down ? '中断' : m ? fmtMs(m.rtt) : `≈${fmtMs(e.estimate)}`;
+    const rttText = down ? '中断' : m ? fmtMs(m.rtt) : e.estimate == null ? '未测' : `≈${fmtMs(e.estimate)}`;
     const extra = [m?.loss ? `丢包 ${m.loss.toFixed(1)}%` : '', mbps ? fmtMbps(mbps) : ''].filter(Boolean).join(' · ');
-    const html = `<b style="color:${color}">${rttText}</b>${e.link?.label ? `<span>${esc(e.link.label)}</span>` : ''}${extra ? `<small>${extra}</small>` : ''}`;
+    const html = e.link?.compact
+      ? `<b style="color:${color}">${esc(e.link.label)} · ${rttText}</b>`
+      : `<b style="color:${color}">${rttText}</b>${e.link?.label ? `<span>${esc(e.link.label)}</span>` : ''}${extra ? `<small>${extra}</small>` : ''}`;
     if (obj.label.element._html !== html) {
       obj.label.element.innerHTML = html;
       obj.label.element._html = html;
@@ -169,7 +178,7 @@ export class Links {
         prev = q.copy(p);
       }
     }
-    return best;
+    return best && (this.edges.get(best.id)?.data.hit || best);
   }
 
   update(dt) {

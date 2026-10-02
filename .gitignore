@@ -6,3 +6,10 @@ data/
 .env
 .env.*
 !.env.example
+
+# 本地导入、凭据和诊断产物（禁止发布）
+*.private.*
+*.pem
+*.key
+*.p12
+*.pfx

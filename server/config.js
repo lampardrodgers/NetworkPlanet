@@ -1,3 +1,4 @@
+import { normalizeMeasurement } from './local/config.js';
 // 探针 / 检测目标 / 告警 / 自动注册的配置：默认值、校验与「全局 + 单机覆盖」合并。
 // 所有来自前端的配置都经过这里清洗后才写进 db.settings，Agent 拿到的值也只来自这里。
 import crypto from 'node:crypto';
@@ -213,13 +214,14 @@ export const newEnrollKey = () => crypto.randomBytes(24).toString('base64url');
 /** 补齐/清洗整个 settings（启动加载时调用一次） */
 /** 线路模式里「本机」的位置：Hub 测的延迟就当作本机延迟（Hub 跑在自己电脑上时正好如此） */
 export function normalizeOrigin(o) {
-  const lat = Number(o?.lat);
-  const lon = Number(o?.lon);
+  const lat = o?.lat == null || o.lat === '' ? NaN : Number(o.lat);
+  const lon = o?.lon == null || o.lon === '' ? NaN : Number(o.lon);
   const ok = Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
   return { name: str(o?.name, 30) || '本机', note: str(o?.note, 40), lat: ok ? lat : null, lon: ok ? lon : null };
 }
 
 export function normalizeSettings(s) {
+  s.measurement = normalizeMeasurement(s.measurement);
   s.probe = normalizeProbe(s.probe);
   s.targets = normalizeTargets(s.targets);
   s.alerts = normalizeAlerts(s.alerts);

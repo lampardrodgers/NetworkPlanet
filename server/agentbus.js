@@ -1,3 +1,4 @@
+import { LOCAL_MODE } from './local/config.js';
 // Hub → Agent 的下行通道 + 服务器间带宽测试编排。
 //
 // 下行通道：Agent 常驻一个长轮询 GET /api/agent/poll，Hub 有指令时立即返回（纯文本，每行一条）：
@@ -188,6 +189,7 @@ export function taskReport(serverId, body) {
 // 定时自动测速：对所有「手动连接」，距上次结果（或上次尝试）超过 autoHours 的排进队列
 const lastAuto = new Map();
 setInterval(() => {
+  if (LOCAL_MODE) return;
   const h = db.settings.probe?.bandwidth?.autoHours;
   if (!h) return;
   const now = Date.now();

@@ -24,7 +24,7 @@ function persist() {
 }
 
 const nameOf = (key) => (key === '@origin' ? originInfo(ui.origin)?.name : serverById(key)?.name) || '?';
-const msText = (h) => (h.measured && (h.rtt == null || h.loss >= 100) ? '中断' : h.rtt == null ? '—' : `${h.measured ? '' : '≈'}${fmtMs(h.rtt)}`);
+const msText = (h) => (h.measured && (h.rtt == null || h.loss >= 100) ? '中断' : h.rtt == null ? '—' : `${h.method === 'tcp' ? 'TCP ' : ''}${h.measured ? '' : '≈'}${fmtMs(h.rtt)}`);
 const hopColor = (h) => (h.measured && (h.rtt == null || h.loss >= 100) ? LAT_COLORS.bad : h.measured ? latencyColor(h.rtt) : LAT_COLORS.none);
 
 /** handlers: { onHover(id|null), onSelect(id), onChange(), pickLocation(cb) } */
@@ -59,7 +59,7 @@ export function initRoutePanel(h) {
     if (act === 'adopt' && r?.suggest) {
       try {
         await api('POST', '/api/routes', { from: ui.origin, to: r.to, via: r.suggest.via, label: '', hopLabels: [] });
-        toast(`已采用：经 ${r.suggest.via.map(nameOf).join(' → ')} 中转`, 'ok');
+        toast(`已保存规划：经 ${r.suggest.via.map(nameOf).join(' → ')} 中转`, 'ok');
       } catch (err) {
         toast(err.message, 'error');
       }
@@ -75,6 +75,11 @@ export function initRoutePanel(h) {
 }
 
 /** 当前起点的线路规划，以及平面视图要画的数据 */
+function endpointResult(id) {
+ const p=store.status.local?.profiles?.[id];
+ if(!store.localMode||p?.disabled)return null;
+ return (store.status.local?.results||[]).filter(r=>r.source==='local'&&r.target===id&&r.method==='ssh-banner'&&r.address===p?.endpoint?.host&&r.port===p?.endpoint?.port).sort((a,b)=>b.finishedAt-a.finishedAt)[0]||null;
+}
 export function routeView() {
   if (!originInfo(ui.origin)) ui.origin = 'local';
   const plan = routePlan(ui.origin, { suggest: ui.suggest });
@@ -84,6 +89,8 @@ export function routeView() {
     const p = r.path;
     const how = p.via.length ? `经 ${p.via.map(nameOf).join(' → ')}` : '直连';
     let text = `${p.total == null ? (p.down ? '中断' : '—') : `${p.measured ? '' : '≈'}${fmtMs(p.total)}`} · ${how}`;
+    const endpoint=endpointResult(r.to);
+    if(endpoint?.state==='ok')text=`${fmtMs(endpoint.rtt)} · frp/SSH 端到端${endpoint.stale?' · 历史':''}`;
     if (r.suggest) text += ` · 中转可到 ${fmtMs(r.suggest.total)}`;
     info.set(r.to, { text, color: p.down ? LAT_COLORS.bad : p.total == null ? LAT_COLORS.none : latencyColor(p.total) });
   }
@@ -111,9 +118,9 @@ export function renderRoutePanel(plan = lastPlan) {
       <select class="input" data-origin title="从哪里出发">${opts}</select>
       <button class="icon-btn" data-act="origin-edit" title="设置本机位置">⌖</button>
     </div>
-    ${noLoc ? `<div class="rp-warn">还没设置「本机」在哪。<button class="btn sm primary" data-act="origin-edit">设置本机位置</button></div>` : ''}
+    ${noLoc ? `<div class="rp-warn">本机位置未定位，先显示拓扑起点。<button class="btn sm primary" data-act="origin-edit">设置本机位置</button></div>` : ''}
     <div class="rp-tools">
-      <label class="check"><input type="checkbox" data-suggest ${ui.suggest ? 'checked' : ''}/> 推荐中转</label>
+      ${store.localMode ? '<span class="hint">本地实测 · 未知段不估算</span>' : `<label class="check"><input type="checkbox" data-suggest ${ui.suggest ? 'checked' : ''}/> 推荐中转</label>`}
       <button class="btn sm" data-act="add">＋ 自定义线路</button>
     </div>
     <div class="rp-sum">
@@ -129,6 +136,7 @@ export function renderRoutePanel(plan = lastPlan) {
 
 function originHint(o) {
   if (!o) return '';
+  if (store.localMode) return '延迟来自本地测量。中转总值仅为分段估算；端到端响应在本地测量中查看。保存线路不会修改实际网络。';
   if (o.kind === 'local') return '本机 → VPS 的延迟取自 Hub 的探测：Hub 跑在你这台电脑上时就是本机延迟；Hub 在别处时代表 Hub 所在网络。';
   if (o.kind === 'tgt') return `从「${esc(o.name)}」出发：用各台 VPS 上的 Agent 测这个目标的延迟（反向测，近似对称）。`;
   return `从「${esc(o.name)}」出发：用 Agent 之间互测的延迟。`;
@@ -148,6 +156,10 @@ function rowHtml(r) {
   const p = r.path;
   const color = p.down ? LAT_COLORS.bad : p.total == null ? LAT_COLORS.none : latencyColor(p.total);
   const via = p.via.length > 0;
+  const endpoint=endpointResult(r.to);
+  const frps=store.status.local?.profiles?.[r.to]?.managementVia?.at(-1);
+  const frpRtt=frps?(store.status.local?.results||[]).filter(x=>x.source===r.to&&x.target===frps&&x.kind==='latency'&&x.state==='ok').sort((a,b)=>b.finishedAt-a.finishedAt)[0]:null;
+  const trace=(store.status.local?.results||[]).filter(x=>x.kind==='route'&&x.source===(lastPlan?.origin?.kind==='local'?'local':lastPlan?.origin?.id)&&x.target===r.to).sort((a,b)=>b.finishedAt-a.finishedAt)[0];
   const save = via && r.direct.total != null && p.total != null ? r.direct.total - p.total : null;
   return `
     <div class="rp-row ${via ? 'via' : ''} ${r.suggest ? 'has-sug' : ''}" data-to="${r.to}">
@@ -157,8 +169,11 @@ function rowHtml(r) {
         <em style="color:${color}">${p.total == null ? (p.down ? '中断' : '—') : `${p.measured ? '' : '≈'}${fmtMs(p.total)}`}</em>
       </div>
       <div class="rp-path">${hopsHtml(p)}</div>
-      ${via ? `<div class="rp-cmp">直连 <span style="color:${hopColor(r.direct.hops[0])}">${msText(r.direct.hops[0])}</span>${save != null ? ` · ${save >= 0 ? `快 ${fmtMs(save)}` : `<span class="bad">慢 ${fmtMs(-save)}</span>`}` : ''}${p.loss ? ` · 丢包 ${p.loss.toFixed(1)}%` : ''}</div>` : ''}
-      ${r.suggest ? `<div class="rp-sug"><span>建议经 <b>${r.suggest.via.map((v) => esc(nameOf(v))).join(' → ')}</b> 中转：${fmtMs(r.suggest.total)}${r.direct.total != null ? `（省 ${fmtMs(r.direct.total - r.suggest.total)}）` : '（直连不通）'}</span><button class="btn sm primary" data-act="adopt">采用</button></div>` : ''}
+      ${endpoint?`<div class="rp-cmp">frp/SSH 端到端：<b>${endpoint.state==='ok'?fmtMs(endpoint.rtt):endpoint.state==='refused'?'入口端口拒绝连接':'后端未响应'}</b>${endpoint.stale?' · 历史结果':''}</div>`:''}
+      ${frpRtt?`<div class="rp-cmp">frpc → frps：<b>${fmtMs(frpRtt.rtt)}</b> · ${frpRtt.method==='tcp'?'TCP 建连':'Ping 往返'} · ${esc(nameOf(frps))}${frpRtt.stale?' · 历史结果':''}</div>`:''}
+      ${trace?`<div class="rp-cmp">${trace.entryOnly?'公网入口':'去程'}观测：${esc(trace.networks?.join(' → ')||'网络未识别')}${trace.complete?'':' · 路径不完整'}</div>`:''}
+      ${via ? `<div class="rp-cmp">直连 <span style="color:${hopColor(r.direct.hops[0])}">${msText(r.direct.hops[0])}</span>${save != null ? ` · 与分段估算相差 ${fmtMs(Math.abs(save))}` : ''}${p.loss ? ` · 丢包 ${p.loss.toFixed(1)}%` : ''}</div>` : ''}
+      ${r.suggest ? `<div class="rp-sug"><span>建议经 <b>${r.suggest.via.map((v) => esc(nameOf(v))).join(' → ')}</b> 中转：${fmtMs(r.suggest.total)}${r.direct.total != null ? `（省 ${fmtMs(r.direct.total - r.suggest.total)}）` : '（直连不通）'}</span><button class="btn sm primary" data-act="adopt">保存规划</button></div>` : ''}
       <div class="rp-acts">
         <button class="link-btn" data-act="edit">${via || r.route ? '编辑线路' : '设中转'}</button>
         ${r.route ? '<button class="link-btn bad" data-act="del">改回直连</button>' : ''}
@@ -187,7 +202,7 @@ export function openRouteForm({ from = 'local', to = '', via = [], route = null 
       <button type="button" class="btn sm" data-addhop>＋ 加一个中转</button>
       <label>线路名称<input class="input" name="label" value="${esc(route?.label || '')}" placeholder="比如：欧洲经香港 / 美西走 CN2" /></label>
       <div class="rf-preview"></div>
-      <p class="hint">每一段的延迟取实测（本机段来自 Hub 探测，服务器之间来自 Agent 互测），没有实测的按距离估算并标 ≈。段标签会显示在地图的连线上。</p>
+      <p class="hint">每段注明测量来源。中转总值为分段估算。本地模式没有数据时显示未知。保存只记录拓扑，不改变实际网络。</p>
       <div class="form-actions"><span class="err"></span><button type="button" class="btn" data-close>取消</button><button class="btn primary" type="submit">保存</button></div>
     </form>`,
   });

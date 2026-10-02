@@ -192,7 +192,7 @@ function serverView(s) {
       <div class="title-row"><i class="dot ${statusKey(st)}"></i><h2>${esc(s.name)}</h2><button class="icon-btn" data-act="close" title="关闭">✕</button></div>
       <div class="sub">
         <span class="badge" style="--c:${providerColor(s.provider)}">${esc(s.provider || '未指定')}</span>
-        <span>📍 ${esc(cityName(s.city) || '未知')}${s.country ? ' · ' + esc(s.country) : ''}</span>
+        <span>📍 ${esc(cityName(s.city) || '未知')}${s.country ? ' · ' + esc(s.country) : ''}${s.locSource === 'egress-geoip' ? ' · 出口 IP 位置（约略，不代表设备物理位置）' : s.locSource === 'geoip' ? ' · IP 定位（约略）' : ''}</span>
         ${s.demo ? '<span class="pill">演示</span>' : ''}
       </div>
       <div class="sub mono">
