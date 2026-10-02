@@ -191,7 +191,7 @@ export class Markers {
         const single = m.site.servers.length === 1;
         const shown = single || m.site.expand > 0.5;
         const important = this.selection?.id === srv.id || this.hover?.id === srv.id;
-        return shown && (this.showLabels || important) && this.globe.isFacing(m.pos, 0.002);
+        return shown && this.showLabels && this.globe.isFacing(m.pos, 0.002);
       },
       priority: () => (this.selection?.id === srv.id ? 3000 : this.hover?.id === srv.id ? 2500 : m.site.expand > 0.5 ? 300 : 50),
     });

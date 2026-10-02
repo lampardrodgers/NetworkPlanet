@@ -54,6 +54,7 @@ code, .mono { font-family: var(--mono); font-size: 12px; }
   transition: opacity 0.2s;
 }
 .np-label.np-hidden { opacity: 0; pointer-events: none; }
+.np-label.np-displaced::before { content: ''; position: absolute; left: var(--leader-x); top: var(--leader-y); width: var(--leader-length); height: 1px; background: #94a3b8; transform-origin: 0 0; transform: rotate(var(--leader-angle)); pointer-events: none; }
 
 .np-srv {
   display: flex;

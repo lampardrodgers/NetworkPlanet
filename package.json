@@ -1,6 +1,6 @@
 {
   "name": "network-planet",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "Three.js 3D 地球：实时展示全球 VPS 服务器位置、状态、互联延迟与带宽",
   "type": "module",

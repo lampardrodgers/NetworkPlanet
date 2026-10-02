@@ -170,7 +170,7 @@ export class FlatMap {
     this.servers = servers.filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lon));
     this.statusMap = statusMap || {};
     this.dirty = true;
-    if (this.active && !this.fitted && this.servers.length) this.fitAll(false);
+    // 首次定位由入口在节点、线路和侧栏均更新后执行。
   }
 
   refreshStatus(statusMap) {
@@ -267,7 +267,7 @@ export class FlatMap {
   /** 让一组经纬度点落在未被面板遮挡的区域里 */
   fit(points, { maxK = 28, animate = true, around = null } = {}) {
     if (!points.length) return;
-    this.fitted = true;
+    this.fitted = this.servers.length > 0;
     if (this.locked) around ??= this.worldCenter;
     if (around != null) {
       // 线路模式：以起点为中心展开经度，和弧线「走近路」的方向一致
@@ -309,7 +309,7 @@ export class FlatMap {
    * around 只用于同分时的偏好，不强制起点居中而把其他节点挤向一侧。
    */
   fitWorld({ around = null, animate = true } = {}) {
-    this.fitted = true;
+    this.fitted = this.servers.length > 0;
     const points = [...this.servers];
     if (Number.isFinite(this.rv?.origin?.lon) && !points.some(p=>p.id==='@origin')) {
       points.push({id:'@origin',lon:this.rv.origin.lon,lat:this.rv.origin.lat});
@@ -1010,7 +1010,7 @@ export class FlatMap {
       const e = a.e;
       if (!showLinkLabel(e,this.showLinkLabels)) continue;
       const m = e.measured;
-      const rtt = a.down ? '中断' : m ? fmtMs(m.rtt) : e.estimate == null ? '未测' : `≈${fmtMs(e.estimate)}`;
+      const rtt = e.statusText || (a.down ? '中断' : m ? fmtMs(m.rtt) : e.estimate == null ? '未测' : `≈${fmtMs(e.estimate)}`);
       const parts = (e.link?.compact ? [e.link.label,rtt] : [e.kind === 'suggest' ? '建议' : '', e.link?.label, rtt, a.hl && a.mbps ? fmtMbps(a.mbps) : '', a.hl && m?.loss ? `丢包 ${m.loss.toFixed(1)}%` : '']).filter(Boolean);
       const text = parts.join(' · ');
       const w = this.measure(text, LF) + 22;

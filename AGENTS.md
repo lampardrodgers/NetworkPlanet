@@ -74,7 +74,7 @@ Agent 上报（/api/agent/*）┴─> server/monitor.js（内存）──SSE sta
 
 ### 标签（`src/globe/labels.js`）
 
-- 所有 CSS2DObject 标签都要通过 `LabelManager.register({ obj, wanted, priority })` 注册，由它统一控制可见性和避让（重叠则加 `.np-hidden`）。
+- 所有 CSS2DObject 标签都要通过 `LabelManager.register({ obj, wanted, priority })` 注册，由它统一控制可见性和避让。节点注册 `required: true`，重叠时移位并加引导线，不隐藏；线路标签仍可用 `.np-hidden` 避让。
 - `wanted()` 结果会被转成布尔值——CSS2DRenderer 只认 `visible === false`，返回 `null`/`undefined` 会导致标签无法隐藏。
 - 修改标签 innerHTML 后要把 `el._size = null`，让避让重新测量尺寸。
 

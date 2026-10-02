@@ -1,3 +1,4 @@
+import { localMeasuredEdges } from './local-edges.js';
 // 全局前端状态 + 极简事件总线。
 import { estimateRttMs, CITIES } from '../shared/cities.js';
 
@@ -102,7 +103,10 @@ export const alertsOf = (id) => (store.status.alerts || []).filter((x) => x.serv
  * 返回 [{ key, a, b, link?, measured?, estimate, rtt, kind }]
  */
 export function computeEdges() {
-  if(store.localMode)return store.view.showLinks?(store.localEdges||[]):[];
+  if(store.localMode){
+    const base=store.view.showLinks?(store.localEdges||[]):[];
+    return store.view.showMesh?localMeasuredEdges(base,store.status.local?.results||[],store.servers):base;
+  }
   const out = [];
   const seen = new Set();
   const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);

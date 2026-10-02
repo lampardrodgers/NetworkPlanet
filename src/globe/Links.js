@@ -135,7 +135,7 @@ export class Links {
     obj.pulseCount = down || !m ? 0 : mbps ? THREE.MathUtils.clamp(Math.round(1 + Math.log10(mbps + 1) * 0.9), 1, 4) : 1;
     const rtt = m?.rtt ?? e.estimate;
     obj.travel = 0.9 + rtt / 70; // 秒
-    const rttText = down ? '中断' : m ? fmtMs(m.rtt) : e.estimate == null ? '未测' : `≈${fmtMs(e.estimate)}`;
+    const rttText = e.statusText || (down ? '中断' : m ? fmtMs(m.rtt) : e.estimate == null ? '未测' : `≈${fmtMs(e.estimate)}`);
     const extra = [m?.loss ? `丢包 ${m.loss.toFixed(1)}%` : '', mbps ? fmtMbps(mbps) : ''].filter(Boolean).join(' · ');
     const html = e.link?.compact
       ? `<b style="color:${color}">${esc(e.link.label)} · ${rttText}</b>`

@@ -38,7 +38,7 @@ function refreshRoutes({ refit = false } = {}) {
     links.setEdges(computeEdges());
     flat.setEdges(computeEdges());
     markers.setData(mapServers(rv.origin),store.status.servers);
-    if(!store.view.showLinks)rv.segments=[];
+    rv.segments=computeEdges();
   }
   flat.setRouteView(rv);
   if(routeOn())renderRoutePanel(rv.plan);
@@ -140,6 +140,8 @@ store.on('data', () => {
   renderDetail();
   refreshProviders();
   renderMapPlacement();
+  // 数据更新是一个整体：先装入线路与起点，再计算世界接缝。
+  if (flatOn() && !flat.fitted && flat.servers.length) flat.fitAll(false);
 });
 
 function renderMapPlacement() {
@@ -186,6 +188,7 @@ function applyView() {
   flat.setEdges(computeEdges());
   for (const b of $$('#viewbar [data-toggle]')) b.classList.toggle('on', Boolean(v[b.dataset.toggle]));
   for (const b of $$('#viewbar [data-mode]')) b.classList.toggle('on', b.dataset.mode === v.mode);
+  if(store.localMode)refreshRoutes();
   flat.setLocked(Boolean(v.flatLocked));
   $('[data-toggle=flatLocked]').classList.toggle('hidden', !flatOn());
   if (v.mode !== lastMode) {
