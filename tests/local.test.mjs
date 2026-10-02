@@ -12,7 +12,20 @@ import { parseVless, xrayConfig } from '../server/local/vless.js';
 import { classifyTrace } from '../server/local/route-analysis.js';
 import { run } from '../server/local/process.js';
 import { showLinkLabel } from '../src/link-labels.js';
-import { clampMapLatitude } from '../src/flat/layout.js';
+import { clampMapLatitude, balancedWorldLongitude } from '../src/flat/layout.js';
+test('世界接缝平衡欧亚美节点并保持本机连线连续',()=>{
+ const points=[0,9,104,120,140,140,140,237,238,242,242,242,242,281].map((lon,i)=>({id:String(i),lon}));
+ points.push({id:'@origin',lon:120});
+ const edges=points.slice(0,-1).map(p=>({a:'@origin',b:p.id}));
+ const center=balancedWorldLongitude(points,edges,120);
+ assert.ok(center>=140&&center<=165);
+ const wrap=x=>((x+180)%360+360)%360-180;
+ const offsets=points.map(p=>wrap(p.lon-center));
+ assert.ok(Math.max(...offsets)<150); // 北美右侧留出标签空间
+ assert.ok(Math.min(...offsets)>-165); // 欧洲仍在左侧可见范围内
+ for(const p of points)assert.ok(Math.abs(wrap(p.lon-center)-wrap(120-center))<=180);
+ assert.equal(balancedWorldLongitude([],[],120),120);
+});
 test('世界地图在工具栏之间垂直居中，缩放后限制拖动边界',()=>{
  const H=800,k=3,top=100,bottom=80;
  const lat=clampMapLatitude(0,H,k,top,bottom);

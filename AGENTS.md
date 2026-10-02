@@ -86,7 +86,7 @@ Agent 上报（/api/agent/*）┴─> server/monitor.js（内存）──SSE sta
 - `store.view.mode`：`globe` / `flat` / `route`。平面时 `globe.setPaused(true)` 停掉 3D 渲染，`FlatMap.setActive(true)` 启动自己的 rAF 循环。
 - FlatMap 用等距圆柱投影，视图是 `{ lon, lat, k(px/度) }`。服务器画在离视图中心最近的那一份世界上（`unwrap`），弧线终点按「走近路」换份，画的时候再加左右两份副本（`copies`）。
 - 陆地掩膜来自 countries-50m（4096×2048，首次进入平面时生成）。点阵底图缓存在离屏 canvas，`dirty` 时才重画（视角 / 数据变化，晨昏线每分钟一次）。
-- 默认 `fitWorld()` 显示整张世界地图（`worldK()` = 刚好放进面板之间的缩放，`kMin` = 它 × 0.85）；中心经度按「接缝经线切断的连线最少、尽量落在海上」选，线路模式以起点经度为中心。
+- 默认 `fitWorld()` 显示整张世界地图（`worldK()` = 刚好放进面板之间的缩放，`kMin` = 它 × 0.85）；`balancedWorldLongitude()` 优先保持连线连续、给边缘标签留空间，再平衡节点左右分布。海上接缝和起点经度只作次要偏好；线路模式与锁定模式使用同一规则，不强制起点居中。
 - 锁定模式（`store.view.flatLocked` → `setLocked`）：只有一份世界（`worldCenter` ± 180°），仍可缩放拖动，由 `clampView` 把左右边缘限制在面板之间的可视区域外，`kMin` = `worldK()`；`unwrap` 以 `worldCenter` 为准，连线和节点裁剪在 `worldX()` 这一份世界里，`flyTo` 不走「经度近路」。
 - 节点聚合同时受屏幕距离（`CLUSTER_PX`）与 25km 地理范围约束，不跨国家合并。标签显示所有成员城市，不能用第一台的城市代表其他地点；选中的、`expanded` 的，或已到最大缩放的簇会环形展开。标签和连线胶囊统一按优先级贪心避让（`drawLabels`）。
 - 线路模式下 `setRouteView({ origin, segments, info })` 取代普通连线。线段的 `a` 可以是 `'@origin'`，`dests` 记录经过它的终点（用于高亮），`hit` 让点击线段时选中终点。

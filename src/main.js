@@ -32,6 +32,7 @@ const routeOn = () => store.view.mode === 'route';
 function refreshRoutes({ refit = false } = {}) {
   if (!routeOn() && !store.localMode) return flat.setRouteView(null);
   const rv = routeView();
+  rv.layoutSegments = rv.segments; // 隐藏连线只影响显示，不改变重置视图时的地图切分。
   if(store.localMode){
     store.localEdges=rv.segments.map(e=>({...e,a:e.a==='@origin'&&rv.origin?.kind==='srv'?rv.origin.id:e.a}));
     links.setEdges(computeEdges());
@@ -42,7 +43,7 @@ function refreshRoutes({ refit = false } = {}) {
   flat.setRouteView(rv);
   if(routeOn())renderRoutePanel(rv.plan);
   if (refit) {
-    // 整张世界地图，以起点为中心（和弧线「走近路」的方向一致）
+    // 整张世界地图，兼顾起点连线连续和节点左右分布。
     flat.fitWorld({ around: rv.origin?.lon ?? null });
   }
 }
@@ -144,8 +145,8 @@ store.on('data', () => {
 function renderMapPlacement() {
   const el = $('#map-placement');
   const missing = store.servers.filter(s => !Number.isFinite(s.lat) || !Number.isFinite(s.lon));
-  const approximate = store.servers.filter(s => ['geoip', 'egress-geoip'].includes(s.locSource)).length;
-  el.innerHTML = `<span>地图已定位 ${store.servers.length - missing.length} / ${store.servers.length}${approximate ? ` · ${approximate} 台为 IP 约略位置` : ''}</span>${missing.length ? `<details open><summary>位置待确认 · ${missing.length} 台（未放入地图）</summary><div>${missing.map(s => `<button class="chip" data-unplaced="${esc(s.id)}">${esc(s.name)}</button>`).join('')}</div><small>点击节点补充实际城市。中转入口的位置不代表设备位置。</small></details>` : ''}`;
+  el.classList.toggle('hidden', !missing.length);
+  el.innerHTML = `${missing.length ? `<details open><summary>位置待确认 · ${missing.length} 台（未放入地图）</summary><div>${missing.map(s => `<button class="chip" data-unplaced="${esc(s.id)}">${esc(s.name)}</button>`).join('')}</div><small>点击节点补充实际城市。中转入口的位置不代表设备位置。</small></details>` : ''}`;
   el.querySelectorAll('[data-unplaced]').forEach(button => button.onclick = () => openServerForm(serverById(button.dataset.unplaced)));
 }
 
@@ -411,6 +412,9 @@ async function boot() {
   window.np = { store, globe, markers, links, flat, select }; // 方便在控制台调试
 
   initSidebar({
+    onLayoutChange: () => {
+      if (flatOn()) flat.fitAll();
+    },
     onSelect: (id) => {
       const sel = { type: 'server', id };
       select(sel);

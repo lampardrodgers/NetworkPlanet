@@ -11,7 +11,7 @@
 import { geoEquirectangular, geoPath } from 'd3-geo';
 import { feature } from 'topojson-client';
 import countries from 'world-atlas/countries-50m.json';
-import { sameMapSite, clampMapLatitude } from './layout.js';
+import { sameMapSite, clampMapLatitude, balancedWorldLongitude } from './layout.js';
 import { showLinkLabel } from '../link-labels.js';
 import { cityName } from '../state.js';
 import { STATUS_COLORS, statusKey, latencyColor, LAT_COLORS, fmtMs, fmtMbps, providerColor } from '../format.js';
@@ -305,41 +305,16 @@ export class FlatMap {
   }
 
   /**
-   * 显示整张世界地图。中心经度：给了 around（线路起点）就用它；
-   * 否则选一条「接缝」经线（地图左右边缘），让被它切断的连线最少、离它近的服务器最少，中心 = 接缝 + 180°
+   * 显示整张世界地图。自动选择接缝，平衡节点左右分布并为标签留边。
+   * around 只用于同分时的偏好，不强制起点居中而把其他节点挤向一侧。
    */
   fitWorld({ around = null, animate = true } = {}) {
     this.fitted = true;
-    let lon = around ?? 110;
-    if (around == null && this.servers.length) {
-      const wrap = (x) => ((((x + 180) % 360) + 360) % 360) - 180;
-      const byId = new Map(this.servers.map((x) => [x.id, x]));
-      let best = Infinity;
-      for (let seam = -180; seam < 180; seam += 5) {
-        let cost = 0;
-        for (const e of this.edges) {
-          const a = byId.get(e.a);
-          const b = byId.get(e.b);
-          if (!a || !b) continue;
-          const ra = wrap(a.lon - seam);
-          if (Math.abs(ra + wrap(b.lon - a.lon)) > 180 || Math.abs(ra) < 3) cost += 10;
-        }
-        for (const x of this.servers) {
-          const d = Math.abs(wrap(x.lon - seam));
-          if (d < 20) cost += (20 - d) / 4;
-        }
-        // 接缝尽量落在海上，别把大陆劈成两半
-        let land = 0;
-        for (let lat = -55; lat <= 72; lat += 3) if (isLand(seam, lat)) land++;
-        cost += land * 1.5;
-        // 同等情况下偏向常见的「亚太居中」视角
-        cost += Math.abs(wrap(seam + 180 - 110)) / 1000;
-        if (cost < best) {
-          best = cost;
-          lon = wrap(seam + 180);
-        }
-      }
+    const points = [...this.servers];
+    if (Number.isFinite(this.rv?.origin?.lon) && !points.some(p=>p.id==='@origin')) {
+      points.push({id:'@origin',lon:this.rv.origin.lon,lat:this.rv.origin.lat});
     }
+    const lon = balancedWorldLongitude(points,this.rv?.layoutSegments || this.rv?.segments || this.edges,around ?? 110,isLand);
     const ins = this.insets();
     const k = this.worldK();
     const cx = ins.l + (this.W - ins.l - ins.r) / 2;

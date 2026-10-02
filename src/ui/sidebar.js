@@ -38,6 +38,7 @@ export function initSidebar(h) {
   $('.side-toggle', root).addEventListener('click', () => {
     ui.open = !ui.open;
     root.classList.toggle('collapsed', !ui.open);
+    handlers.onLayoutChange?.();
   });
   $('input[type=search]', root).addEventListener('input', (e) => {
     ui.q = e.target.value.trim().toLowerCase();
