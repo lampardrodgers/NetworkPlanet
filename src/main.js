@@ -138,7 +138,7 @@ function connectStream() {
 
 // ---------------- 状态 → 视图 ----------------
 store.on('data', () => {
-  markers.setData(mapServers(), store.status.servers);
+  markers.setData(mapServers(store.localMode ? routeView().origin : store.settings.origin), store.status.servers);
   links.setEdges(computeEdges());
   flat.setData(store.servers, store.status.servers);
   flat.setEdges(computeEdges());

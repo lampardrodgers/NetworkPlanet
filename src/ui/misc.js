@@ -102,66 +102,7 @@ export function openMatrix({ onPick, onPickServer } = {}) {
 }
 
 // ---------------- 导入导出 ----------------
-export function openImportExport() {
-  const m = openModal({
-    title: '导入 / 导出',
-    wide: true,
-    content: `
-      <div class="form">
-        <div class="row-actions">
-          <button class="btn primary" data-full-backup>加密完整备份 / 同步</button>
-          <button class="btn" data-export>⬇ 基础 JSON（不含凭据）</button>
-          <span class="hint">基础 JSON 只含节点、连接和线路；完整迁移请使用加密备份。</span>
-        </div>
-        <h4>批量导入</h4>
-        <p class="hint">支持 JSON（导出格式，或服务器数组）或 CSV（首行表头：<code>name,ip,city,provider,tags,lat,lon</code>，tags 用 <code>|</code> 分隔）。本地模式下没有坐标的节点仍会导入，位置可后续补充。</p>
-        <textarea class="input mono" rows="10" placeholder='[{"name":"LA-1","ip":"1.2.3.4","city":"Los Angeles","provider":"vultr","tags":["proxy"]}]'></textarea>
-        <div class="row-actions">
-          <label class="btn sm">选择文件<input type="file" accept=".json,.csv,.txt" hidden /></label>
-          <label class="check"><input type="checkbox" data-replace /> 覆盖现有全部数据（危险）</label>
-        </div>
-        <div class="form-actions"><span class="err"></span><button class="btn primary" data-import>导入</button></div>
-      </div>`,
-  });
-  $('[data-full-backup]',m.el).addEventListener('click',()=>{m.close();openBackup();});
-  const ta = $('textarea', m.el);
-  $('[data-export]', m.el).addEventListener('click', async () => {
-    const data = await api('GET', '/api/export');
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `network-planet-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  });
-  $('input[type=file]', m.el).addEventListener('change', async (e) => {
-    const f = e.target.files[0];
-    if (f) ta.value = await f.text();
-  });
-  $('[data-import]', m.el).addEventListener('click', async (e) => {
-    const err = $('.err', m.el);
-    err.textContent = '';
-    let payload;
-    try {
-      payload = parseImport(ta.value);
-    } catch (x) {
-      err.textContent = x.message;
-      return;
-    }
-    const replace = $('[data-replace]', m.el).checked;
-    if (replace && !(await confirmDialog('将删除现有全部服务器和连接，确定？', { danger: true, okText: '覆盖' }))) return;
-    e.target.disabled = true;
-    try {
-      const r = await api('POST', '/api/import', { ...payload, replace });
-      toast(`导入 ${r.added} 台${r.skipped.length ? `，${r.skipped.length} 台无法定位已跳过` : ''}`, r.skipped.length ? 'warn' : 'ok', 5000);
-      m.close();
-    } catch (x) {
-      err.textContent = x.message;
-    } finally {
-      e.target.disabled = false;
-    }
-  });
-}
+export function openImportExport() { openBackup({parseImport}); }
 
 function parseImport(text) {
   const t = text.trim();

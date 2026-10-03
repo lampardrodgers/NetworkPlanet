@@ -16,11 +16,50 @@ def physical_interfaces():
         code, out = command(['/usr/sbin/networksetup', '-listallhardwareports'])
         if code: raise RuntimeError('Cannot inspect physical adapters')
         names = re.findall(r'Device: (en\d+)', out)
-        return [n for n in names if 'status: active' in command(['/sbin/ifconfig', n])[1]]
+        active=[]
+        for n in dict.fromkeys(names):
+            code, details=command(['/sbin/ifconfig', n])
+            if code or 'status: active' not in details:continue
+            # 雷雳端口等可能显示 active，但没有可用于本轮 IPv4 测试的地址。
+            addresses=[ipaddress.IPv4Address(ip) for ip in re.findall(r'\binet (\d+\.\d+\.\d+\.\d+)\b',details)]
+            if any(not (ip.is_link_local or ip.is_loopback or ip.is_unspecified) for ip in addresses):active.append(n)
+        return active
     if sys.platform.startswith('linux'):
         root = '/sys/class/net'
         return [n for n in os.listdir(root) if os.path.exists(root+'/'+n+'/device') and open(root+'/'+n+'/operstate').read().strip() == 'up']
     raise RuntimeError('Use the Windows PowerShell script on Windows')
+
+def select_interface(requested=None):
+    choices=physical_interfaces()
+    if requested:
+        if requested not in choices:raise RuntimeError('指定的物理网卡不可用：'+requested+'；可用网卡：'+(', '.join(choices) or '无'))
+        return requested
+    if not choices:raise RuntimeError('没有可用的物理 IPv4 网卡，请检查 Wi-Fi 或网线连接')
+    if len(choices)==1:return choices[0]
+    if sys.platform=='darwin':
+        # 只读取路由。默认路由可能是 utun，不能将其作为测试出口。
+        code, out=command(['/sbin/route','-n','get','default'])
+        default=re.search(r'interface:\s*(\S+)',out) if not code else None
+        routed=[]
+        for iface in choices:
+            code, out=command(['/sbin/route','-n','get','-ifscope',iface,'default'])
+            actual=re.search(r'interface:\s*(\S+)',out)
+            gateway=re.search(r'gateway:\s*(\d+\.\d+\.\d+\.\d+)\b',out)
+            if not code and actual and actual[1]==iface and gateway and not re.search(r'\b(?:REJECT|BLACKHOLE)\b',out):routed.append(iface)
+        if default and default[1] in routed:return default[1]
+        if len(routed)==1:return routed[0]
+        if not routed:raise RuntimeError('没有可确认的物理 IPv4 默认出口；未启动测试')
+        choices=routed
+    if not sys.stdin.isatty():
+        raise RuntimeError('多个物理出口可用，请在网页的 DIRECT 物理网卡中填写 '+ ' / '.join(choices)+'，然后重新生成命令')
+    print('发现多个可用物理出口，请选择本轮使用的网卡（不会修改系统设置）：',flush=True)
+    for index,iface in enumerate(choices,1):print('  '+str(index)+'. '+iface,flush=True)
+    while True:
+        selected=input('输入编号或网卡名，q 取消：').strip()
+        if selected.lower()=='q':raise RuntimeError('用户取消；未启动测试')
+        if selected in choices:return selected
+        if selected.isdigit() and 1<=int(selected)<=len(choices):return choices[int(selected)-1]
+        print('请选择列表中的编号或网卡名。',flush=True)
 
 def check_route(iface, ip):
     if iface not in physical_interfaces(): raise RuntimeError('Physical adapter disconnected; stopped')
@@ -173,9 +212,7 @@ def main():
     job=json.loads(base64.b64decode(MANIFEST));result={'id':job['id'],'token':job['token'],'results':[]}
     if time.time()*1000>job['expiresAt']:raise RuntimeError('Task expired; generate a new script')
     try:
-        choices=physical_interfaces();iface=args.interface or job.get('directInterface')
-        if not iface and len(choices)==1:iface=choices[0]
-        if iface not in choices:raise RuntimeError('Specify one active physical adapter with --interface: '+', '.join(choices))
+        iface=select_interface(args.interface or job.get('directInterface'))
         print('测试模式：'+('仅线路分析（不测 Ping 延迟）' if job.get('kind')=='route' else '延迟 + 线路分析' if job['trace'] else '延迟测试'),flush=True)
         print('DIRECT physical interface: '+iface+'; no proxy/route/settings changes. Ctrl+C to stop.',flush=True)
         # Sequential execution keeps cancellation immediate and probe traffic bounded.
@@ -187,7 +224,7 @@ def main():
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(request,timeout=20) as response:
         if response.status!=200:raise RuntimeError('Upload failed')
-    print('Results uploaded. Exiting; no background process remains.')
+    print(('未执行节点测试；已上传停止原因。' if result.get('error') and not result['results'] else 'Results uploaded.')+' Exiting; no background process remains.')
 if __name__=='__main__':
     try:main()
     except Exception as e:print('Stopped: '+str(e),file=sys.stderr);sys.exit(1)

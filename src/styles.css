@@ -734,3 +734,24 @@ tr.ev:hover td { background: rgba(56, 189, 248, 0.06); }
 [data-action="toggle-sourcebar"][aria-expanded="true"] {background:rgba(56,189,248,.18);border-color:var(--accent);color:var(--accent)}
 #sourcebar select {width:300px;max-width:60vw}
 #sourcebar small {display:block;color:var(--text-2);margin-top:4px;font-size:11px}
+
+/* 导入导出：常用操作在首屏，兼容选项按需展开。 */
+.backup-panel {font-size:13px;line-height:1.6}
+.backup-intro {margin:0 0 16px}
+.backup-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.backup-card {min-width:0;padding:18px;background:rgba(5,16,31,.5);border:1px solid var(--border);border-radius:12px;display:flex;flex-direction:column;gap:12px;align-items:stretch}
+.backup-card h4 {margin:0;color:var(--text);font-size:16px}
+.backup-card p {margin:0}
+.backup-field {display:block;color:var(--text-2);font-size:12px}
+.backup-field .input {display:block;width:100%;margin-top:6px}
+.backup-field .muted {margin-left:4px}
+.backup-file-row {display:flex;align-items:center;gap:10px;min-height:40px}
+.backup-file-row .btn {flex:none;justify-content:center;white-space:nowrap}
+.backup-file-row span {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2);font-size:12px}
+.backup-options summary {cursor:pointer;color:var(--text-2);font-size:12px;padding:6px 0}
+.backup-options .check {display:flex;align-items:flex-start;gap:8px;font-size:12px;margin:10px 0;line-height:1.5}
+.backup-options .check input {flex:none;margin-top:3px;accent-color:var(--accent)}
+.backup-card > .btn.primary {justify-content:center;min-height:36px}
+.backup-message:empty {display:none}
+.backup-preview {max-height:260px;overflow:auto;font-size:12px}
+@media(max-width:650px){.backup-grid{grid-template-columns:1fr}.backup-card{padding:14px}}

@@ -315,7 +315,7 @@ route('POST', '/api/servers/:id/probe', async (req, res, { params }) => {
 
 // 加密完整备份只开放管理员接口；恢复过程不触发测量。
 const backups=backupService({db,dataDir:process.env.NP_DATA_DIR||path.resolve('data'),flush,busy:()=>!!getMeasurement().active,changed,reschedule});
-for(const action of ['export','preview','apply'])route('POST','/api/backups/'+action,async(req,res,{body})=>{
+for(const action of ['export','preview','apply','basic-preview','basic-apply'])route('POST','/api/backups/'+action,async(req,res,{body})=>{
   if(!LOCAL_MODE)throw new HttpError(400,'完整迁移目前用于本地测量模式');
   try{return await backups[action](body);}catch(e){throw new HttpError(400,e.message);}
 });

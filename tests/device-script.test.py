@@ -1,7 +1,49 @@
 import pathlib, unittest
+from unittest.mock import patch
 code=pathlib.Path('scripts/device/probe.py').read_text()
 namespace={'__name__':'test_module'}
 exec(compile(code,'probe.py','exec'),namespace)
+class InterfaceSelection(unittest.TestCase):
+    def test_active_thunderbolt_and_link_local_are_not_ipv4_exits(self):
+        replies={
+            ('/usr/sbin/networksetup','-listallhardwareports'):(0,'Device: en0\nDevice: en1\nDevice: en2\nDevice: en3\n'),
+            ('/sbin/ifconfig','en0'):(0,'inet 192.168.2.4 netmask 0xffffff00\nstatus: active'),
+            ('/sbin/ifconfig','en1'):(0,'inet6 fe80::1234\nstatus: active'),
+            ('/sbin/ifconfig','en2'):(0,'inet 169.254.1.5\nstatus: active'),
+            ('/sbin/ifconfig','en3'):(0,'inet 10.0.0.5\nstatus: inactive'),
+        }
+        with patch.object(namespace['sys'],'platform','darwin'),patch.dict(namespace,{'command':lambda a:replies[tuple(a)]}):
+            self.assertEqual(namespace['physical_interfaces'](),['en0'])
+
+    def choose(self, default='utun6', routed=('en0',), requested=None, tty=False, answers=()):
+        def command(args):
+            self.assertEqual(args[:3],['/sbin/route','-n','get'])
+            if args[3:] == ['default']:return 0,'interface: '+default+'\n'
+            iface=args[4]
+            return (0,'interface: '+iface+'\ngateway: 192.168.2.1\nflags: <UP,GATEWAY>') if iface in routed else (1,'not in table')
+        with patch.object(namespace['sys'],'platform','darwin'),patch.object(namespace['sys'].stdin,'isatty',return_value=tty),patch.dict(namespace,{'physical_interfaces':lambda:['en0','en1'],'command':command}),patch('builtins.input',side_effect=answers):
+            return namespace['select_interface'](requested)
+
+    def test_vpn_default_uses_only_routed_physical_adapter(self):
+        self.assertEqual(self.choose(), 'en0')
+
+    def test_two_physical_exits_prefer_system_physical_default(self):
+        self.assertEqual(self.choose(default='en1',routed=('en0','en1')), 'en1')
+
+    def test_explicit_choice_is_not_overridden(self):
+        self.assertEqual(self.choose(default='en0',routed=('en0','en1'),requested='en1'),'en1')
+        with self.assertRaisesRegex(RuntimeError,'指定的物理网卡不可用'):self.choose(requested='utun6')
+
+    def test_ambiguous_exits_offer_terminal_choice(self):
+        self.assertEqual(self.choose(routed=('en0','en1'),tty=True,answers=['utun6','2']), 'en1')
+
+    def test_ambiguous_noninteractive_stops_without_guessing(self):
+        with self.assertRaisesRegex(RuntimeError,'多个物理出口'):self.choose(routed=('en0','en1'))
+
+    def test_no_physical_route_or_cancel_stops(self):
+        with self.assertRaisesRegex(RuntimeError,'没有可确认'):self.choose(routed=())
+        with self.assertRaisesRegex(RuntimeError,'用户取消'):self.choose(routed=('en0','en1'),tty=True,answers=['q'])
+
 class DirectScript(unittest.TestCase):
     def test_bound_ping_flags(self):
         sys=namespace['sys'];old=sys.platform

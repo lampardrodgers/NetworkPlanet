@@ -23,12 +23,13 @@ function object(x) { return x && typeof x === 'object' && !Array.isArray(x); }
 function safeParse(text) {
   return JSON.parse(text, (k,v) => { need(!['__proto__','constructor','prototype'].includes(k), '备份含无效字段'); return v; });
 }
-function passwordOK(p) { need(typeof p === 'string' && p.length >= 12 && p.length <= 1024, '备份密码需为 12～1024 个字符'); }
+function passwordOK(p) { need(typeof p === 'string', '备份密码格式无效'); }
 async function keyFor(password, salt) { return scrypt(password, salt, 32, { N:32768, r:8, p:1, maxmem:64*1024*1024 }); }
-export async function encryptBackup(payload, password) {
+export async function encryptBackup(payload, password = '') {
   passwordOK(password);
   const text = JSON.stringify(payload);
   need(Buffer.byteLength(text) <= LIMIT, '备份超过 6 MiB，请取消包含测量历史后重试');
+  if (!password) return safeParse(text);
   const salt = crypto.randomBytes(16), iv = crypto.randomBytes(12), key = await keyFor(password, salt);
   try {
     const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
@@ -37,8 +38,13 @@ export async function encryptBackup(payload, password) {
     return { format:FORMAT, version:1, kdf:'scrypt-32768-8-1', cipher:'aes-256-gcm', salt:salt.toString('base64'), iv:iv.toString('base64'), tag:cipher.getAuthTag().toString('base64'), data:data.toString('base64') };
   } finally { key.fill(0); }
 }
-export async function decryptBackup(envelope,password) {
+export async function decryptBackup(envelope,password = '') {
   passwordOK(password);
+  if (envelope?.format === 'network-planet-backup') {
+    const text=JSON.stringify(envelope);
+    need(Buffer.byteLength(text)<=LIMIT,'备份超过 6 MiB');
+    return safeParse(text);
+  }
   need(object(envelope) && envelope.format===FORMAT && envelope.version===1 && envelope.kdf==='scrypt-32768-8-1' && envelope.cipher==='aes-256-gcm','不支持的备份格式或版本');
   function bytes(name,len) {
     const s=envelope[name]; need(typeof s==='string' && /^[A-Za-z0-9+/]*={0,2}$/.test(s) && s.length<=LIMIT*1.34,'备份编码无效');
@@ -218,7 +224,30 @@ export function backupService({db,dataDir,flush,busy=()=>false,changed=()=>{},re
     const prefs=portablePreferences(payload.browser||{});
     return {next,vault,files,prefs,summary:{rows,mode,conflict,exportedAt:payload.exportedAt,host:payload.host,counts:{servers:next.servers.length,links:next.links.length,routes:next.routes.length,profiles:Object.keys(next.localProfiles).length,keys:new Set(files.filter(f=>f.file.endsWith('.key')).map(f=>f.file)).size,passwords:Object.keys(vault.passwords).length,vless:next.servers.filter(s=>typeof vault[s.id]==='string').length},warnings:[...new Set(warnings)],revision:hash([revision(),payload,options])}};
   }
-  return {
+  function basicPayload(data) {
+    data=safeParse(JSON.stringify(data));
+    need(Array.isArray(data.servers)&&data.servers.length>0&&data.servers.length<=500,'文件内没有有效节点');
+    const payload=capture({},false), ids=new Map();
+    payload.exportedAt=data.exportedAt||null;
+    payload.snapshot.servers=data.servers.map(raw=>{
+      need(object(raw),'节点格式无效');
+      const match=db.servers.find(s=>s.name===raw.name&&s.ip===raw.ip);
+      const id=idOK(raw.id)?raw.id:match?.id||'srv_'+hash([raw.name,raw.ip,raw.host]).slice(0,12);
+      if(raw.id)ids.set(raw.id,id);ids.set(raw.name,id);
+      return {...raw,id};
+    });
+    const remap=id=>ids.get(id)||id;
+    payload.snapshot.links=(data.links||[]).map(l=>({...l,id:idOK(l.id)?l.id:'lnk_'+hash(l).slice(0,12),a:remap(l.a),b:remap(l.b)}));
+    payload.snapshot.routes=(data.routes||[]).map(r=>({...r,id:idOK(r.id)?r.id:'route_'+hash(r).slice(0,12),from:r.from?.startsWith('srv:')?'srv:'+remap(r.from.slice(4)):r.from,to:remap(r.to),via:(r.via||[]).map(remap)}));
+    const importedIds=new Set(payload.snapshot.servers.map(s=>s.id));
+    payload.snapshot.localProfiles=Object.fromEntries(Object.entries(payload.snapshot.localProfiles||{}).filter(([id])=>importedIds.has(id)));
+    payload.warnings=['这是节点清单，没有携带登录凭据；已有同 ID 节点的连接配置会保留。'];
+    return payload;
+  }
+  const basicRequest=b=>({file:basicPayload(b.data),password:'',options:{...b.options,settings:false,history:false,browser:false},revision:b.revision,currentBrowser:b.currentBrowser});
+  const service = {
+    'basic-preview': b=>service.preview(basicRequest(b)),
+    'basic-apply': b=>service.apply(basicRequest(b)),
     export: b=>exclusive(async()=>{const p=capture(b.browser,b.history!==false);return {file:await encryptBackup(p,b.password),warnings:p.warnings};}),
     preview: b=>exclusive(async()=>plan(await decryptBackup(b.file,b.password),b.options).summary),
     apply: b=>exclusive(async()=>{
@@ -242,4 +271,5 @@ export function backupService({db,dataDir,flush,busy=()=>false,changed=()=>{},re
     }),
     rollback: id=>{need(/^[a-f0-9-]{36}$/.test(id),'回滚编号无效');return safeParse(fileText(path.join(dataDir,'backups',id+'.json'),LIMIT*1.4));},
   };
+  return service;
 }

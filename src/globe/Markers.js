@@ -76,6 +76,11 @@ export class Markers {
     for (const g of groups) {
       const id = g.servers[0].isOrigin ? 'site:origin' : `site:${g.lat.toFixed(2)},${g.lon.toFixed(2)}`;
       let site = this.sites.get(id);
+      // 起点使用稳定 ID，但切换设备、修正位置后必须重建地理坐标。
+      if (site && (site.lat !== g.lat || site.lon !== g.lon)) {
+        this.disposeSite(site);
+        site = null;
+      }
       if (!site) site = this.createSite(id, g);
       site.servers = g.servers;
       site.name = cityName(mostCommon(g.servers.map((s) => s.city).filter(Boolean))) || `${g.lat.toFixed(1)}, ${g.lon.toFixed(1)}`;

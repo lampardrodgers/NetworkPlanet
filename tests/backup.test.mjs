@@ -106,3 +106,25 @@ test('完整备份 API 认证、跨站隔离、预览和应用；基础 JSON 恢
  assert.equal((await call('/api/backups/rollback/'+result.body.rollbackId)).body.format,'network-planet-encrypted');
  state=(await call('/api/state')).body;assert.equal(state.servers.length,2);assert.equal(state.settings.measurement.mode,'manual');
 });
+
+test('可不设密码，也可使用一位密码；两种文件均可完整导入',async t=>{
+ const a=fixture(t);populate(a);
+ for(const password of ['', '1', 'a'.repeat(2048)]){
+  const b=fixture(t),out=await a.api.export({password});
+  assert.equal(out.file.format,password?'network-planet-encrypted':'network-planet-backup');
+  const request={file:out.file,password};const p=await b.api.preview(request);
+  await b.api.apply({...request,revision:p.revision});
+  assert.equal(readSecrets(b.db,b.dir).passwords.node_b,'secret-password');
+  assert.equal(b.db.servers.length,2);
+ }
+});
+test('统一入口导入基础 JSON：保留已有凭据、线路、稳定 ID，提供回滚',async t=>{
+ const f=fixture(t);populate(f);
+ const data={servers:f.db.servers.map(s=>({...s,name:s.name+' changed'})),links:f.db.links,routes:f.db.routes};
+ const p=await f.api['basic-preview']({data});
+ const r=await f.api['basic-apply']({data,revision:p.revision});
+ assert.equal(f.db.servers.length,2);assert.equal(f.db.servers[0].name,'A changed');
+ assert.equal(readSecrets(f.db,f.dir).passwords.node_b,'secret-password');
+ assert.equal(f.db.routes.length,1);assert.equal(f.api.rollback(r.rollbackId).format,'network-planet-backup');
+ const p2=await f.api['basic-preview']({data});await f.api['basic-apply']({data,revision:p2.revision});assert.equal(f.db.servers.length,2);
+});
