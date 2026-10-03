@@ -34,7 +34,7 @@ npm test；python3 -B tests/device-script.test.py；npm run build。Mac/Linux �
 
 Mac/Linux 使用已有 Python 3。Windows 使用无 Profile 的临时 PowerShell 子进程；不设置 ExecutionPolicy Bypass，不更改执行策略。组织策略限制执行时停止。Windows 尚未实机验证。下载脚本保留在折叠的可选项中。
 
-## 配置与测量起点（0.4.2）
+## 配置与测量起点（0.4.0）
 
 - 此设备保存自己的节点范围、物理网卡、系统、位置与线路开关；不修改后台自动调度。首次范围沿用后台配置。节点方法及公网入口共用连接档案，可在此设备面板打开“连接配置”。
 - 支持原生 Ping、TCP 建连、SSH banner 后端响应。只有 ICMP 结果称为 Ping；只有 TCP 入口成功不能标成 frpc 可达。无独立 IP 的 frp 节点可通过已配置入口测 SSH banner，不再直接跳过。
