@@ -46,6 +46,7 @@ export function connect(address, port, banner, signal, ctx=null) {
 export function sshArgs(s, password = false) {
   // 不加载用户的 RemoteCommand/LocalCommand，避免登录时意外安装 terminfo 等。
   const args=['-F','/dev/null','-T','-o',password?'BatchMode=no':'BatchMode=yes','-o','NumberOfPasswordPrompts=1','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=8','-o','ConnectionAttempts=1','-o','ClearAllForwardings=yes','-o','PermitLocalCommand=no','-o','RequestTTY=no'];
+  if(s.knownHostsFile) args.push('-o','UserKnownHostsFile='+JSON.stringify(s.knownHostsFile));
   if(s.identityFile) args.push('-i',s.identityFile,'-o','IdentitiesOnly=yes');
   if(s.jump) args.push('-J',`${s.jump.user}@${net.isIP(s.jump.host)===6?'['+s.jump.host+']':s.jump.host}:${s.jump.port}`);
   return [...args,'-p',String(s.port),`${s.user}@${s.host}`];

@@ -1,3 +1,4 @@
+import { backupService } from './backup.js';
 import { deviceTests } from './local/device-tests.js';
 import { LOCAL_MODE } from './local/config.js';
 import { getMeasurement, putProfile, configureMeasurement, startRound, stopRound, reschedule, onMeasurement, shutdownMeasurement } from './local/engine.js';
@@ -62,7 +63,7 @@ async function readBody(req) {
   let size = 0;
   for await (const c of req) {
     size += c.length;
-    if (size > 5 * 1024 * 1024) throw new HttpError(413, '请求体过大');
+    if (size > (req.url.startsWith('/api/backups/') ? 10 : 5) * 1024 * 1024) throw new HttpError(413, '请求体过大');
     chunks.push(c);
   }
   if (!chunks.length) return {};
@@ -312,13 +313,29 @@ route('POST', '/api/servers/:id/probe', async (req, res, { params }) => {
   return { rtt };
 });
 
+// 加密完整备份只开放管理员接口；恢复过程不触发测量。
+const backups=backupService({db,dataDir:process.env.NP_DATA_DIR||path.resolve('data'),flush,busy:()=>!!getMeasurement().active,changed,reschedule});
+for(const action of ['export','preview','apply'])route('POST','/api/backups/'+action,async(req,res,{body})=>{
+  if(!LOCAL_MODE)throw new HttpError(400,'完整迁移目前用于本地测量模式');
+  try{return await backups[action](body);}catch(e){throw new HttpError(400,e.message);}
+});
+route('GET','/api/backups/rollback/:id',(req,res,{params})=>{
+  try{return backups.rollback(params.id);}catch{throw new HttpError(404,'未找到回滚备份');}
+});
+
 // 批量导入（JSON 数组），可选 replace 覆盖
 route('POST', '/api/import', async (req, res, { body }) => {
+  if(body.format==='network-planet-encrypted')throw new HttpError(400,'请使用完整备份接口');
+  if(getMeasurement().active)throw new HttpError(409,'当前正在测量，请结束本轮后再导入');
   const list = Array.isArray(body) ? body : body.servers || [];
   const links = Array.isArray(body.links) ? body.links : [];
   if (body.replace) {
     db.servers = [];
     db.links = [];
+    db.routes = [];
+    db.localProfiles = {};
+    db.settings.measurement = {...db.settings.measurement,mode:'manual',scope:[]};
+    reschedule();
   }
   const idMap = {};
   let added = 0;
@@ -326,7 +343,7 @@ route('POST', '/api/import', async (req, res, { body }) => {
   for (const raw of list) {
     const srv = normalizeServer(raw);
     const loc = await resolveLocation(srv, srv.provider, { allowGeoip: !LOCAL_MODE });
-    if (!loc) {
+    if (!loc && !LOCAL_MODE) {
       skipped.push(srv.name);
       continue;
     }
@@ -346,6 +363,12 @@ route('POST', '/api/import', async (req, res, { body }) => {
     const l = normalizeLink({ ...raw, a, b });
     l.id = newId('lnk');
     db.links.push(l);
+  }
+  for(const raw of Array.isArray(body.routes)?body.routes:[]){
+    const r=normalizeRoute({...raw,to:idMap[raw.to]||raw.to,via:(raw.via||[]).map(id=>idMap[id]||id),from:raw.from?.startsWith('srv:')?'srv:'+(idMap[raw.from.slice(4)]||raw.from.slice(4)):raw.from});
+    if(!r.from||!db.servers.some(s=>s.id===r.to)||!r.via.every(id=>db.servers.some(s=>s.id===id)))continue;
+    if(r.from.startsWith('srv:')&&!db.servers.some(s=>s.id===r.from.slice(4)))continue;
+    r.id=newId('route');db.routes=db.routes.filter(x=>x.from!==r.from||x.to!==r.to);db.routes.push(r);
   }
   save();
   changed('servers');

@@ -39,9 +39,10 @@ export function normalizeProfile(p = {}, old = {}) {
     const s = { ...old.ssh, ...o.ssh };
     if (!/^[a-zA-Z0-9_][\w.-]{0,63}$/.test(s.user || '')) throw new Error('SSH 用户名无效');
     if (s.identityFile && !/^\/(?!.*[\r\n\0]).+/.test(s.identityFile)) throw new Error('密钥需要本地绝对路径');
+    if (s.knownHostsFile && !/^\/(?!.*[\r\n\0]).+/.test(s.knownHostsFile)) throw new Error('主机指纹需要本地绝对路径');
     const jump = s.jump ? { host: host(s.jump.host), user: String(s.jump.user), port: integer(s.jump.port || 22, 1, 65535, '跳板端口') } : null;
     if (jump && !/^[a-zA-Z0-9_][\w.-]{0,63}$/.test(jump.user)) throw new Error('跳板用户名无效');
-    out.ssh = { host: host(s.host), port: integer(s.port || 22, 1, 65535, 'SSH 端口'), user: s.user, identityFile: String(s.identityFile || ''), jump };
+    out.ssh = { host: host(s.host), port: integer(s.port || 22, 1, 65535, 'SSH 端口'), user: s.user, identityFile: String(s.identityFile || ''), knownHostsFile: String(s.knownHostsFile || ''), jump };
   }
   return out;
 }

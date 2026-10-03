@@ -1,4 +1,5 @@
 // 杂项弹窗：延迟矩阵、JSON/CSV 导入导出、设置、管理口令。
+import { openBackup } from './backup.js';
 import { store, measuredBetween, cityName } from '../state.js';
 import { estimateRttMs } from '../../shared/cities.js';
 import { api, setToken } from '../api.js';
@@ -108,11 +109,12 @@ export function openImportExport() {
     content: `
       <div class="form">
         <div class="row-actions">
-          <button class="btn" data-export>⬇ 导出 JSON（服务器 + 连接）</button>
-          <span class="hint">导出不包含 Agent Token 和 API Key。</span>
+          <button class="btn primary" data-full-backup>加密完整备份 / 同步</button>
+          <button class="btn" data-export>⬇ 基础 JSON（不含凭据）</button>
+          <span class="hint">基础 JSON 只含节点、连接和线路；完整迁移请使用加密备份。</span>
         </div>
         <h4>批量导入</h4>
-        <p class="hint">支持 JSON（导出格式，或服务器数组）或 CSV（首行表头：<code>name,ip,city,provider,tags,lat,lon</code>，tags 用 <code>|</code> 分隔）。没有坐标/城市时按 IP 自动定位。</p>
+        <p class="hint">支持 JSON（导出格式，或服务器数组）或 CSV（首行表头：<code>name,ip,city,provider,tags,lat,lon</code>，tags 用 <code>|</code> 分隔）。本地模式下没有坐标的节点仍会导入，位置可后续补充。</p>
         <textarea class="input mono" rows="10" placeholder='[{"name":"LA-1","ip":"1.2.3.4","city":"Los Angeles","provider":"vultr","tags":["proxy"]}]'></textarea>
         <div class="row-actions">
           <label class="btn sm">选择文件<input type="file" accept=".json,.csv,.txt" hidden /></label>
@@ -121,6 +123,7 @@ export function openImportExport() {
         <div class="form-actions"><span class="err"></span><button class="btn primary" data-import>导入</button></div>
       </div>`,
   });
+  $('[data-full-backup]',m.el).addEventListener('click',()=>{m.close();openBackup();});
   const ta = $('textarea', m.el);
   $('[data-export]', m.el).addEventListener('click', async () => {
     const data = await api('GET', '/api/export');
@@ -165,7 +168,8 @@ function parseImport(text) {
   if (!t) throw new Error('内容为空');
   if (t.startsWith('[') || t.startsWith('{')) {
     const j = JSON.parse(t);
-    return Array.isArray(j) ? { servers: j } : { servers: j.servers || [], links: j.links || [] };
+    if(j.format==='network-planet-encrypted')throw new Error('请使用“加密完整备份 / 同步”导入此文件');
+    return Array.isArray(j) ? { servers: j } : { servers: j.servers || [], links: j.links || [], routes: j.routes || [] };
   }
   const lines = t.split(/\r?\n/).filter((l) => l.trim());
   const head = lines.shift().split(',').map((h) => h.trim().toLowerCase());

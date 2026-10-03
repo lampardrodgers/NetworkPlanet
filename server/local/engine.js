@@ -1,3 +1,4 @@
+import { secretPath, readSecrets, writeSecrets } from './secrets.js';
 import { directContext } from './direct.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,12 +11,12 @@ import { classifyTrace, asnDatabase, CLASSIFIER_VERSION } from './route-analysis
 import { workers } from './process.js';
 import { meshNodes, meshJobs } from './mesh.js';
 const dataDir=process.env.NP_DATA_DIR||path.resolve('data');
-const secretFile=path.join(dataDir,'local-secrets.json');
+const secrets = () => readSecrets(db, dataDir);
 let active=null, timer=null, nextAt=null, onChange=()=>{};
 let controller=null, routeController=null, completion=null;
 // 兼容修正：旧线路分类器把数据库来源写进了测量起点。只恢复带 DIRECT 原始证据的本机记录。
 let fixedSources=false;
-for(const r of [...Object.values(db.localResults),...db.localHistory])if(r.kind==='route'&&r.transport==='direct'&&r.raw?.startsWith('DIRECT ')&&r.source!=='local'){
+for(const r of [...Object.values(db.localResults),...db.localHistory])if(r.kind==='route'&&r.transport==='direct'&&r.raw?.startsWith('DIRECT ')&&r.source!=='local'&&!r.source?.startsWith('device:')){
  r.databaseSource=r.source;r.source='local';fixedSources=true;
 }
 if(fixedSources){db.localResults=Object.fromEntries(Object.values(db.localResults).map(r=>[[r.source,r.target,r.method,r.kind,r.address||'',r.port||''].join('|'),r]));save();}
@@ -26,7 +27,7 @@ for(const r of [...Object.values(db.localResults),...db.localHistory])if(r.kind=
 }
 if(reclassified)save();
 export function onMeasurement(fn){onChange=fn;}
-function secrets(){try{return JSON.parse(fs.readFileSync(secretFile,'utf8'));}catch(e){if(e.code==='ENOENT')return {};throw new Error('本地凭据文件无法读取');}}
+
 export function putProfile(id,input){
   if(!db.servers.some(s=>s.id===id&&!s.demo))throw new Error('请选择真实节点');
   const p=normalizeProfile(input,db.localProfiles[id]);
@@ -34,12 +35,12 @@ export function putProfile(id,input){
   if(input.vless!==undefined){
     if(input.vless)parseVless(input.vless);
     const vault=secrets();input.vless?vault[id]=String(input.vless):delete vault[id];
-    fs.mkdirSync(dataDir,{recursive:true});fs.writeFileSync(secretFile+'.tmp',JSON.stringify(vault),{mode:0o600});fs.renameSync(secretFile+'.tmp',secretFile);
+    writeSecrets(db,dataDir,vault);
   }
   if(input.sshPassword!==undefined){
     const vault=secrets();vault.passwords ||= {};
     if(input.sshPassword) vault.passwords[id]=String(input.sshPassword); else delete vault.passwords[id];
-    fs.mkdirSync(dataDir,{recursive:true});fs.writeFileSync(secretFile+'.tmp',JSON.stringify(vault),{mode:0o600});fs.renameSync(secretFile+'.tmp',secretFile);
+    writeSecrets(db,dataDir,vault);
   }
   db.localProfiles[id]=p;save();return publicProfiles()[id];
 }
@@ -47,7 +48,7 @@ export function publicProfiles(){
   const vault=secrets();
   return Object.fromEntries(Object.entries(db.localProfiles).map(([id,p])=>{
     let vless=null;try{if(vault[id]){const {address,port,network,security}=parseVless(vault[id]);vless={address,port,network,security};}}catch{}
-    return [id,{...p,ssh:p.ssh?{...p.ssh,identityFile:undefined,hasIdentity:!!p.ssh.identityFile,hasPassword:!!vault.passwords?.[id]}:null,vless}];
+    return [id,{...p,ssh:p.ssh?{...p.ssh,identityFile:undefined,knownHostsFile:undefined,hasIdentity:!!p.ssh.identityFile,hasPassword:!!vault.passwords?.[id]}:null,vless}];
   }));
 }
 export function getMeasurement(){
@@ -168,7 +169,7 @@ async function execute(selected,kind,remote,auto){
   if(!valid.length)return;
   try{
    for(let i=0;i<valid.length&&!signal.aborted;i+=4){
-    const out=await remoteBatch(ssh,valid.slice(i,i+4),signal,groupKind==='route',secrets().passwords?.[source]?{file:secretFile,id:source}:null,ctx);
+    const out=await remoteBatch(ssh,valid.slice(i,i+4),signal,groupKind==='route',secrets().passwords?.[source]?{file:secretPath(db,dataDir),id:source}:null,ctx);
     for(const {job,text} of out)try{
       if(job.requirePing&&text.includes('NP_UNAVAILABLE'))throw new Error('源 VPS 没有 ping；未安装软件，也未用 TCP 替代');
       if(groupKind==='latency'&&text.includes('NP_TCP ')){
