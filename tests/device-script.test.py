@@ -17,6 +17,8 @@ class InterfaceSelection(unittest.TestCase):
 
     def choose(self, default='utun6', routed=('en0',), requested=None, tty=False, answers=()):
         def command(args):
+            if args[0]=='/usr/sbin/networksetup':return 0,'Hardware Port: USB 10/100/1000 LAN\nDevice: en0\n\nHardware Port: Wi-Fi\nDevice: en1\n'
+            if args[0]=='/sbin/ifconfig':return 0,'inet 192.168.2.5 netmask 0xffffff00\nstatus: active'
             self.assertEqual(args[:3],['/sbin/route','-n','get'])
             if args[3:] == ['default']:return 0,'interface: '+default+'\n'
             iface=args[4]
@@ -35,7 +37,24 @@ class InterfaceSelection(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'指定的物理网卡不可用'):self.choose(requested='utun6')
 
     def test_ambiguous_exits_offer_terminal_choice(self):
-        self.assertEqual(self.choose(routed=('en0','en1'),tty=True,answers=['utun6','2']), 'en1')
+        import contextlib,io
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(self.choose(routed=('en0','en1'),tty=True,answers=['utun6','2']), 'en1')
+        self.assertIn('2. Wi-Fi（无线网络） · en1 · IPv4：192.168.2.5',output.getvalue())
+        self.assertIn('1. 有线网络（USB 10/100/1000 LAN） · en0',output.getvalue())
+
+    def test_hardware_labels_do_not_assume_en0_is_wifi(self):
+        def command(args):
+            if args[0]=='/usr/sbin/networksetup':return 0,'Hardware Port: Ethernet\nDevice: en0\n\nHardware Port: Wi-Fi\nDevice: en1\n'
+            return 0,'inet 10.0.0.8\n'
+        with patch.object(namespace['sys'],'platform','darwin'),patch.dict(namespace,{'command':command}):
+            labels=namespace['interface_labels'](['en0','en1'])
+        self.assertIn('有线网络（Ethernet） · en0',labels['en0'])
+        self.assertIn('Wi-Fi（无线网络） · en1',labels['en1'])
+
+    def test_missing_metadata_is_explicit_not_a_guessed_type(self):
+        with patch.object(namespace['sys'],'platform','darwin'),patch.dict(namespace,{'command':lambda args:(1,'')}):
+            self.assertEqual(namespace['interface_labels'](['en0'])['en0'],'物理网卡（类型未知） · en0 · IPv4：未读取到')
 
     def test_ambiguous_noninteractive_stops_without_guessing(self):
         with self.assertRaisesRegex(RuntimeError,'多个物理出口'):self.choose(routed=('en0','en1'))
@@ -119,7 +138,7 @@ class ProbeSummary(unittest.TestCase):
         t={'name':'A','ip':'8.8.8.8','latency':False}
         r={'samples':[],'trace':'1 192.168.1.1\n2 *\n3 8.8.8.8'}
         out=namespace['probe_summary'](t,r)
-        self.assertIn('未执行 Ping 延迟测试',out);self.assertIn('3 跳，2 跳有响应，已到达目标',out)
+        self.assertNotIn('Ping',out);self.assertIn('3 跳，2 跳有响应，已到达目标',out)
         self.assertNotIn('No ICMP',out);self.assertNotIn('Ping 未收到回包',out)
     def test_real_ping_timeout_and_incomplete_route_are_distinct(self):
         out=namespace['probe_summary']({'name':'A','ip':'8.8.8.8','latency':True},{'samples':[],'trace':'1 *\n2 *'})

@@ -29,6 +29,35 @@ def physical_interfaces():
         return [n for n in os.listdir(root) if os.path.exists(root+'/'+n+'/device') and open(root+'/'+n+'/operstate').read().strip() == 'up']
     raise RuntimeError('Use the Windows PowerShell script on Windows')
 
+def interface_labels(choices):
+    # 这些信息只用于展示；读取失败不改变后续的物理网卡绑定和路由校验。
+    names={}
+    if sys.platform=='darwin':
+        try:
+            code,out=command(['/usr/sbin/networksetup','-listallhardwareports'])
+            if not code:
+                for port,iface in re.findall(r'Hardware Port:\s*([^\n]+)\nDevice:\s*(\S+)',out):
+                    if re.search(r'Wi-Fi|AirPort',port,re.I):kind='Wi-Fi（无线网络）'
+                    elif re.search(r'Ethernet|\bLAN\b',port,re.I):kind='有线网络（'+port.strip()+'）'
+                    elif re.search(r'Thunderbolt',port,re.I):kind='雷雳（'+port.strip()+'）'
+                    else:kind=port.strip()
+                    names[iface]=kind
+        except (OSError,subprocess.SubprocessError):pass
+    labels={}
+    for iface in choices:
+        addresses=[]
+        try:
+            if sys.platform=='darwin':
+                code,out=command(['/sbin/ifconfig',iface])
+                if not code:addresses=re.findall(r'\binet (\d+\.\d+\.\d+\.\d+)\b',out)
+            elif sys.platform.startswith('linux'):
+                if os.path.isdir('/sys/class/net/'+iface+'/wireless'):names[iface]='Wi-Fi（无线网络）'
+                code,out=command(['ip','-j','-4','addr','show','dev',iface])
+                if not code:addresses=[a['local'] for row in json.loads(out) for a in row.get('addr_info',[]) if a.get('family')=='inet' and a.get('local')]
+        except (OSError,subprocess.SubprocessError,ValueError,KeyError):pass
+        labels[iface]=names.get(iface,'物理网卡（类型未知）')+' · '+iface+' · IPv4：'+(', '.join(addresses) or '未读取到')
+    return labels
+
 def select_interface(requested=None):
     choices=physical_interfaces()
     if requested:
@@ -53,7 +82,9 @@ def select_interface(requested=None):
     if not sys.stdin.isatty():
         raise RuntimeError('多个物理出口可用，请在网页的 DIRECT 物理网卡中填写 '+ ' / '.join(choices)+'，然后重新生成命令')
     print('发现多个可用物理出口，请选择本轮使用的网卡（不会修改系统设置）：',flush=True)
-    for index,iface in enumerate(choices,1):print('  '+str(index)+'. '+iface,flush=True)
+    labels=interface_labels(choices)
+    for index,iface in enumerate(choices,1):print('  '+str(index)+'. '+labels[iface],flush=True)
+    print('要测试 Wi-Fi 就选无线网络；要测试网线就选有线网络。',flush=True)
     while True:
         selected=input('输入编号或网卡名，q 取消：').strip()
         if selected.lower()=='q':raise RuntimeError('用户取消；未启动测试')
@@ -142,8 +173,6 @@ def probe_summary(t, r):
     if t.get('latency',True):
         samples=r.get('samples',[])
         parts.append('Ping '+str(round(sum(samples)/len(samples),1))+' ms' if samples else 'Ping 未收到回包（0/3）；不代表节点离线')
-    else:
-        parts.append('仅测线路，未执行 Ping 延迟测试')
     if 'trace' in r:
         hops=[line.split() for line in r['trace'].splitlines() if len(line.split())>=2]
         visible=sum(hop[1]!='*' for hop in hops)
@@ -214,7 +243,7 @@ def main():
     try:
         iface=select_interface(args.interface or job.get('directInterface'))
         print('测试模式：'+('仅线路分析（不测 Ping 延迟）' if job.get('kind')=='route' else '延迟 + 线路分析' if job['trace'] else '延迟测试'),flush=True)
-        print('DIRECT physical interface: '+iface+'; no proxy/route/settings changes. Ctrl+C to stop.',flush=True)
+        print('DIRECT physical interface: '+interface_labels([iface])[iface]+'; no proxy/route/settings changes. Ctrl+C to stop.',flush=True)
         # Sequential execution keeps cancellation immediate and probe traffic bounded.
         for target in job['targets']:result['results'].append(probe(target,iface,job['trace']))
     except KeyboardInterrupt:result['error']='Cancelled by user'

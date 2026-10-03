@@ -10,7 +10,7 @@ export function portablePreferences(raw={}) {
   const r=raw['np.routes'];if(r&&typeof r==='object')out['np.routes']={suggest:r.suggest!==false,sourceVisible:r.sourceVisible!==false};
   if(['city','provider','tag','none'].includes(raw['np.group']))out['np.group']=raw['np.group'];
   const d=raw['np.deviceConfig'];if(d&&typeof d==='object'){
-    const prefs={};for(const k of ['trace','routeAnalysis'])if(typeof d[k]==='boolean')prefs[k]=d[k];
+    const prefs={};if(['latency','route','both'].includes(d.kind))prefs.kind=d.kind;for(const k of ['trace','routeAnalysis'])if(typeof d[k]==='boolean')prefs[k]=d[k];
     if(Array.isArray(d.scope))prefs.scope=d.scope.filter(x=>typeof x==='string'&&/^[\w-]{1,64}$/.test(x)).slice(0,500);
     out['np.deviceConfig']=prefs;
   }

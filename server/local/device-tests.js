@@ -15,8 +15,8 @@ export function deviceTests(db,save,notify=()=>{}) {
   if(!['mac','linux','windows'].includes(b.os))fail('支持 Mac、Windows、Linux');
   if(!/^[a-zA-Z0-9_-]{8,80}$/.test(b.deviceId||''))fail('设备标识无效');
   if(!Array.isArray(b.scope)||!b.scope.length||b.scope.length>40)fail('请选择 1～40 个节点');
-  const kind=b.kind||'latency';if(!['latency','route','both'].includes(kind))fail('测试类型无效');
-  const trace=kind==='route'||kind==='both'||b.trace===true;
+  const kind=b.kind||(b.trace===true?'both':'latency');if(!['latency','route','both'].includes(kind))fail('测试类型无效');
+  const trace=kind==='route'||kind==='both';
   const directInterface=text(b.directInterface,50).trim();
   if(directInterface&&!/^[a-zA-Z0-9_.: -]{1,50}$/.test(directInterface))fail('网卡名称无效');
   const isPublic=ip=>net.isIP(ip)===4&&!/^(0|10|127|169\.254|172\.(1[6-9]|2\d|3[01])|192\.168|198\.(18|19)|22[4-9]|23\d|24\d|25[0-5])\./.test(ip);
@@ -45,7 +45,7 @@ export function deviceTests(db,save,notify=()=>{}) {
   const template=fs.readFileSync(new URL(`../../scripts/device/${b.os==='windows'?'probe.ps1':'probe.py'}`,import.meta.url),'utf8');
   const script=template.replace('__NP_MANIFEST__',Buffer.from(JSON.stringify(manifest)).toString('base64'));
   pending.set(id,{...job,manifestBase:job,template,hash:crypto.createHash('sha256').update(token).digest(),used:false});
-  return {id,token,sha256:crypto.createHash('sha256').update(script).digest('hex'),expiresAt,skipped,filename:`netplanet-${id.slice(0,8)}.${b.os==='windows'?'ps1':'py'}`,script};
+  return {id,token,kind,counts:{latency:targets.filter(t=>t.latency).length,route:trace?targets.filter(t=>t.method==='icmp').length:0},sha256:crypto.createHash('sha256').update(script).digest('hex'),expiresAt,skipped,filename:`netplanet-${id.slice(0,8)}.${b.os==='windows'?'ps1':'py'}`,script};
  }
  function authorized(b){
   const j=pending.get(b.id);const digest=crypto.createHash('sha256').update(text(b.token,128)).digest();

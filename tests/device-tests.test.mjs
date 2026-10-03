@@ -4,6 +4,16 @@ import {deviceTests} from '../server/local/device-tests.js';
 const setup=()=>{const db={servers:[{id:'a',name:'A',ip:'8.8.8.8'},{id:'b',name:'FRP'},{id:'off',name:'Off',ip:'1.1.1.1'}],localProfiles:{off:{disabled:true}},localResults:{keep:1}};return {db,api:deviceTests(db,()=>{})};};
 const request={deviceId:'device-12345',name:'Mac test',scope:['a','b','off'],os:'mac',trace:true};
 const decode=t=>JSON.parse(Buffer.from(t.script.match(/MANIFEST = '([^']+)'/)[1],'base64'));
+test('明确的测试内容决定任务：延迟、线路、两者；旧 trace 只用于兼容无 kind 请求',()=>{
+ for(const [kind,trace,latency] of [['latency',false,true],['route',true,false],['both',true,true]]){
+  const {api,db}=setup();const t=api.create({...request,kind,trace:!trace}),m=decode(t);
+  assert.equal(m.kind,kind);assert.equal(m.trace,trace);assert.equal(m.targets[0].latency,latency);
+  assert.deepEqual(t.counts,{latency:latency?1:0,route:trace?1:0});assert.equal(t.kind,kind);
+  api.accept({id:t.id,token:t.token,results:[{target:'a',proof:'mac-bound',samples:latency?[10,12,14]:[],...(trace?{trace:'1 8.8.8.8'}:{})}]});
+  assert.deepEqual(db.deviceRuns[0].results.map(r=>r.kind),[...(latency?['latency']:[]),...(trace?['route']:[])]);
+ }
+ assert.equal(decode(setup().api.create(request)).kind,'both');
+});
 test('一次性脚本不含管理凭据、跳过内网/停用节点',()=>{
  const {api}=setup();const t=api.create(request),m=decode(t);
  assert.equal(m.targets.length,1);assert.equal(t.skipped.length,2);assert.equal(m.token.length,64);
