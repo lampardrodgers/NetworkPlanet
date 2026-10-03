@@ -9,7 +9,7 @@ import { LabelManager } from './globe/labels.js';
 import { Markers } from './globe/Markers.js';
 import { Links } from './globe/Links.js';
 import { FlatMap } from './flat/FlatMap.js';
-import { initRoutePanel, renderRoutePanel, routeView, setRouteOrigin, renderSourceSelector } from './ui/routes.js';
+import { initRoutePanel, renderRoutePanel, routeView, setRouteOrigin, renderSourceSelector, toggleSourceSelector } from './ui/routes.js';
 import { store, select, setView, computeEdges, statusOf, serverById, recordLinkHistory } from './state.js';
 import { api, subscribe } from './api.js';
 import { $, $$, toast, confirmDialog, hasOpenModal } from './ui/dom.js';
@@ -343,6 +343,7 @@ function finishPick(ll) {
 
 // ---------------- 动作 ----------------
 const actions = {
+  'toggle-sourcebar': toggleSourceSelector,
   'add-server': () => openServerForm(),
   'add-link': () => openLinkForm(store.selection?.type === 'server' ? { a: store.selection.id } : {}),
   providers: () => openProviders(),

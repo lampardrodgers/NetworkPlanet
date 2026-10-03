@@ -48,6 +48,7 @@ function Invoke-ServiceProbe($target) {
  } catch {$r.error=$_.Exception.Message;$r.samples=@()} finally {if($socket){$socket.Dispose()}}
  return $r
 }
+Write-Host $(if($job.kind -eq 'route'){'测试模式：仅线路分析（不测 Ping 延迟）'}elseif($job.trace){'测试模式：延迟 + 线路分析'}else{'测试模式：延迟测试'})
 $ping=New-Object System.Net.NetworkInformation.Ping
 try {
     foreach ($target in $job.targets) {
@@ -81,7 +82,14 @@ try {
             }
         } catch { $r.error=$_.Exception.Message; $r.samples=@(); $r.trace='' }
         $result.results+=$r
-        Write-Host ($target.name+': '+$(if($r.error){$r.error}elseif($r.samples.Count){([Math]::Round(($r.samples|Measure-Object -Average).Average,1)).ToString()+' ms'}else{'No ICMP reply'}))
+        $summary=if($r.error){$r.error}elseif($target.latency -eq $false){'仅测线路，未执行 Ping 延迟测试'}elseif($r.samples.Count){'Ping '+([Math]::Round(($r.samples|Measure-Object -Average).Average,1)).ToString()+' ms'}else{'Ping 未收到回包（0/3）；不代表节点离线'}
+        if(-not $r.error -and $r.ContainsKey('trace')){
+         $hops=@($r.trace -split "`n" | Where-Object {$_ -match '^\d+ '})
+         $visible=@($hops | Where-Object {($_ -split ' ')[1] -ne '*'}).Count
+         $reached=@($hops | Where-Object {($_ -split ' ')[1] -eq $target.ip}).Count -gt 0
+         $summary+='；线路 '+$hops.Count+' 跳，'+$visible+' 跳有响应，'+$(if($reached){'已到达目标'}else{'未确认到达目标'})
+        }
+        Write-Host ($target.name+': '+$summary)
     }
 } finally { $ping.Dispose() }
 # Upload is control traffic. It is never counted as a measurement.

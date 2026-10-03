@@ -72,4 +72,30 @@ class ServiceProbe(unittest.TestCase):
             FakeSocket.payload=b'HTTP/1.1 200 OK\r\n'
             result=namespace['service_probe'](target,'en0');self.assertEqual(result['samples'],[]);self.assertIn('No SSH banner',result['error'])
         finally:namespace['check_route']=check;namespace['bind_physical']=bind;sockmod.socket=original
+class ProbeSummary(unittest.TestCase):
+    def test_route_only_does_not_claim_ping_failed(self):
+        t={'name':'A','ip':'8.8.8.8','latency':False}
+        r={'samples':[],'trace':'1 192.168.1.1\n2 *\n3 8.8.8.8'}
+        out=namespace['probe_summary'](t,r)
+        self.assertIn('未执行 Ping 延迟测试',out);self.assertIn('3 跳，2 跳有响应，已到达目标',out)
+        self.assertNotIn('No ICMP',out);self.assertNotIn('Ping 未收到回包',out)
+    def test_real_ping_timeout_and_incomplete_route_are_distinct(self):
+        out=namespace['probe_summary']({'name':'A','ip':'8.8.8.8','latency':True},{'samples':[],'trace':'1 *\n2 *'})
+        self.assertIn('Ping 未收到回包（0/3）',out);self.assertIn('0 跳有响应，未确认到达目标',out)
+    def test_route_only_sends_ttl_probe_without_latency_sampling(self):
+        from unittest.mock import patch
+        import contextlib,io
+        class Sock:
+            def __enter__(self):return self
+            def __exit__(self,*a):pass
+            def setsockopt(self,*a):pass
+            def getsockopt(self,*a):return 7
+        commands=[]
+        def command(args,*a):
+            commands.append(args)
+            return 0,'64 bytes from 8.8.8.8: icmp_seq=0 ttl=55 time=10.5 ms'
+        t={'id':'a','name':'A','ip':'8.8.8.8','latency':False}
+        with patch.object(namespace['sys'],'platform','darwin'),patch.object(namespace['socket'],'socket',return_value=Sock()),patch.object(namespace['socket'],'if_nametoindex',return_value=7),patch.dict(namespace,{'check_route':lambda *a:None,'command':command}),contextlib.redirect_stdout(io.StringIO()) as printed:
+            r=namespace['probe'](t,'en0',True)
+        self.assertEqual(r['samples'],[]);self.assertEqual(len(commands),1);self.assertIn('-m',commands[0]);self.assertEqual(r['trace'],'1 8.8.8.8');self.assertIn('已到达目标',printed.getvalue())
 unittest.main()

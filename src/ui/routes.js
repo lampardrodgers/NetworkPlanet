@@ -357,8 +357,24 @@ export function openOriginForm() {
 export const routeOrigin = () => ui.origin;
 
 export function setRouteOrigin(key,{notify=true}={}){ui.origin=key;persist();if(notify)handlers.onChange?.({refit:true});}
+function renderSourceVisibility() {
+  const visible = !!store.localMode && ui.sourceVisible !== false;
+  $('#sourcebar')?.classList.toggle('hidden', !visible);
+  const button = $('[data-action="toggle-sourcebar"]');
+  if (!button) return;
+  button.classList.toggle('hidden', !store.localMode);
+  button.setAttribute('aria-expanded', String(visible));
+  button.title = `${visible ? '隐藏' : '显示'}测量起点面板`;
+}
+
+export function toggleSourceSelector() {
+  ui.sourceVisible = ui.sourceVisible === false;
+  persist();
+  renderSourceVisibility();
+}
+
 export function renderSourceSelector(origin){
- const root=$('#sourcebar');if(!root)return;root.classList.toggle('hidden',!store.localMode);
+ const root=$('#sourcebar');if(!root)return;renderSourceVisibility();
  const items=originList();const signature=JSON.stringify([items,ui.origin]);
  if(root.dataset.signature!==signature){root.dataset.signature=signature;root.innerHTML=`<label>测量起点 <select class="input" data-measurement-origin aria-label="测量起点">${items.map(o=>`<option value="${esc(o.key)}" ${o.key===ui.origin?'selected':''}>${esc(o.name)}</option>`).join('')}</select></label><small data-source-info></small><button class="link-btn" data-source-location>设置起点位置</button>`;}
  $('[data-source-location]',root).hidden=origin?.kind!=='local';

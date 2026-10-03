@@ -97,6 +97,21 @@ def service_probe(t, iface):
     print(t['name']+' ['+t['method']+']: '+(r.get('error') or str(round(r['samples'][0],1))+' ms'),flush=True)
     return r
 
+def probe_summary(t, r):
+    if r.get('error'):return t['name']+': '+r['error']
+    parts=[]
+    if t.get('latency',True):
+        samples=r.get('samples',[])
+        parts.append('Ping '+str(round(sum(samples)/len(samples),1))+' ms' if samples else 'Ping 未收到回包（0/3）；不代表节点离线')
+    else:
+        parts.append('仅测线路，未执行 Ping 延迟测试')
+    if 'trace' in r:
+        hops=[line.split() for line in r['trace'].splitlines() if len(line.split())>=2]
+        visible=sum(hop[1]!='*' for hop in hops)
+        reached=any(hop[1]==t['ip'] for hop in hops)
+        parts.append('线路 '+str(len(hops))+' 跳，'+str(visible)+' 跳有响应，'+('已到达目标' if reached else '未确认到达目标'))
+    return t['name']+': '+'；'.join(parts)
+
 def probe(t, iface, trace):
     ip = str(ipaddress.IPv4Address(t['ip']))
     if not ipaddress.ip_address(ip).is_global: raise RuntimeError('Refusing non-public target')
@@ -124,7 +139,7 @@ def probe(t, iface, trace):
                     hop,_,reached=linux_raw_ping(iface,ip,ttl);hops.append(str(ttl)+' '+hop)
                     if reached:break
                 r['trace']='\n'.join(hops)
-            print(t['name']+': '+(str(round(sum(r['samples'])/len(r['samples']),1))+' ms' if r['samples'] else 'No ICMP reply'),flush=True)
+            print(probe_summary(t,r),flush=True)
             return r
         for _ in range(3 if t.get('latency',True) else 0):
             check_route(iface,ip)
@@ -147,7 +162,7 @@ def probe(t, iface, trace):
             r['trace']='\n'.join(hops)
     except Exception as e:
         r.update(error=str(e)[:300],samples=[],trace='')
-    print(t['name']+': '+(r.get('error') or (str(round(sum(r['samples'])/len(r['samples']),1))+' ms' if r['samples'] else 'No ICMP reply')),flush=True)
+    print(probe_summary(t,r),flush=True)
     return r
 
 def main():
@@ -161,6 +176,7 @@ def main():
         choices=physical_interfaces();iface=args.interface or job.get('directInterface')
         if not iface and len(choices)==1:iface=choices[0]
         if iface not in choices:raise RuntimeError('Specify one active physical adapter with --interface: '+', '.join(choices))
+        print('测试模式：'+('仅线路分析（不测 Ping 延迟）' if job.get('kind')=='route' else '延迟 + 线路分析' if job['trace'] else '延迟测试'),flush=True)
         print('DIRECT physical interface: '+iface+'; no proxy/route/settings changes. Ctrl+C to stop.',flush=True)
         # Sequential execution keeps cancellation immediate and probe traffic bounded.
         for target in job['targets']:result['results'].append(probe(target,iface,job['trace']))
