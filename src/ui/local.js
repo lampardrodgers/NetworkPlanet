@@ -10,8 +10,8 @@ export function openLocalMonitor(){
  const data=store.status.local, cfg=data?.config||store.settings.measurement;
  if(!cfg)return toast('本地测量服务尚未就绪','error');
  const profiles=data?.profiles||{};
- const m=openModal({title:'本地测量',wide:true,content:`
- <form class="form local-monitor"><div class="row-btns"><button type="button" class="btn primary" data-run="mesh">全部 VPS 互相 Ping 一轮</button><span class="hint">只测 VPS 之间；每方向 5 包，可停止，不开启自动测试。</span></div><p class="hint">测量电脑：${esc(data?.host||'本机')}。配置和历史保存在本地。VPS 上不安装探针。DIRECT 测试绑定物理网卡，不使用系统代理。VLESS 代理测试需单独开启。</p>
+ const m=openModal({title:'后台主机测量 / VPS 互测',wide:true,content:`
+ <form class="form local-monitor"><div class="row-btns"><button type="button" class="btn primary" data-run="mesh">全部 VPS 互相 Ping 一轮</button><span class="hint">只测 VPS 之间；每方向 5 包，可停止，不开启自动测试。</span></div><p class="hint">实际执行主机：${esc(data?.host||'本机')}。此处任务由后台主机执行，不是打开网页的电脑。VPS 上不安装探针。DIRECT 测试绑定物理网卡，不使用系统代理。VLESS 代理测试需单独开启。</p>
  <div class="grid2"><label>测试方式<select class="input" name="mode"><option value="manual" ${cfg.mode==='manual'?'selected':''}>手动测试</option><option value="auto" ${cfg.mode==='auto'?'selected':''}>自动测试</option></select></label>
  <label>每轮间隔（分钟，1～1440）<input class="input" name="interval" type="number" min="1" max="1440" step="any" value="${cfg.intervalSec?cfg.intervalSec/60:''}" placeholder="自动测试时必填" /></label></div>
  <div class="grid2"><label>DIRECT 物理网卡<input class="input" name="directInterface" value="${esc(cfg.directInterface||'')}" placeholder="自动选择，例如 en0" /></label><label class="check"><input type="checkbox" name="proxyTests" ${cfg.proxyTests?'checked':''}/> 另测 VLESS 代理（不属于 DIRECT）</label></div>

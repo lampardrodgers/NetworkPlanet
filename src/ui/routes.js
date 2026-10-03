@@ -1,3 +1,4 @@
+import {deviceResults} from '../../shared/device-results.js';
 // 线路模式的右侧面板：选起点、看每台 VPS 怎么走（每一跳延迟、总延迟、和直连比）、采用建议的中转、编辑自定义线路、设置本机位置。
 import { store, serverById, cityName } from '../state.js';
 import { originList, originInfo, routePlan, planSegments, evalPath } from '../routes.js';
@@ -31,6 +32,8 @@ const hopColor = (h) => (h.measured && (h.rtt == null || h.loss >= 100) ? LAT_CO
 export function initRoutePanel(h) {
   handlers = h;
   const root = $('#routepanel');
+  $('#sourcebar').addEventListener('click',e=>{if(e.target.closest('[data-source-location]'))openOriginForm();});
+  $('#sourcebar').addEventListener('change',e=>{if(e.target.matches('[data-measurement-origin]'))setRouteOrigin(e.target.value);});
   root.addEventListener('change', (e) => {
     if (e.target.matches('[data-origin]')) {
       ui.origin = e.target.value;
@@ -81,16 +84,16 @@ function endpointResult(id) {
  return (store.status.local?.results||[]).filter(r=>r.source==='local'&&r.target===id&&r.method==='ssh-banner'&&r.address===p?.endpoint?.host&&r.port===p?.endpoint?.port).sort((a,b)=>b.finishedAt-a.finishedAt)[0]||null;
 }
 export function routeView() {
-  if (!originInfo(ui.origin)) ui.origin = 'local';
+  if (store.servers.length && !originInfo(ui.origin)) ui.origin = 'local';
   const plan = routePlan(ui.origin, { suggest: ui.suggest });
   lastPlan = plan;
   const info = new Map();
   for (const r of plan.rows) {
     const p = r.path;
-    const how = p.via.length ? `经 ${p.via.map(nameOf).join(' → ')}` : '直连';
+    const how = plan.origin?.id?.startsWith('device:') && !(serverById(r.to)?.host||serverById(r.to)?.ip) ? '无公网地址 · 未测' : p.via.length ? `经 ${p.via.map(nameOf).join(' → ')}` : '直连';
     let text = `${p.total == null ? (p.down ? '中断' : '—') : `${p.measured ? '' : '≈'}${fmtMs(p.total)}`} · ${how}`;
-    const endpoint=endpointResult(r.to);
-    if(endpoint?.state==='ok')text=`${fmtMs(endpoint.rtt)} · frp/SSH 端到端${endpoint.stale?' · 历史':''}`;
+    const endpoint=ui.origin.startsWith('device:')?deviceResults(store.deviceRuns,ui.origin.slice(7)).find(x=>x.target===r.to&&x.method==='ssh-banner'):ui.origin==='local'?endpointResult(r.to):null;
+    if(endpoint)text=endpoint.state==='ok'?`${fmtMs(endpoint.rtt)} · frp/SSH 端到端${endpoint.stale?' · 历史':''}`:'SSH 后端未响应';
     if (r.suggest) text += ` · 中转可到 ${fmtMs(r.suggest.total)}`;
     info.set(r.to, { text, color: p.down ? LAT_COLORS.bad : p.total == null ? LAT_COLORS.none : latencyColor(p.total) });
   }
@@ -136,6 +139,7 @@ export function renderRoutePanel(plan = lastPlan) {
 
 function originHint(o) {
   if (!o) return '';
+  if(o?.id?.startsWith('device:'))return '当前显示此设备最近的延迟和线路报告；未测节点不使用后台主机延迟补齐。VPS 互测在后台测量中单独执行。';
   if (store.localMode) return '延迟来自本地测量。中转总值仅为分段估算；端到端响应在本地测量中查看。保存线路不会修改实际网络。';
   if (o.kind === 'local') return '本机 → VPS 的延迟取自 Hub 的探测：Hub 跑在你这台电脑上时就是本机延迟；Hub 在别处时代表 Hub 所在网络。';
   if (o.kind === 'tgt') return `从「${esc(o.name)}」出发：用各台 VPS 上的 Agent 测这个目标的延迟（反向测，近似对称）。`;
@@ -156,10 +160,10 @@ function rowHtml(r) {
   const p = r.path;
   const color = p.down ? LAT_COLORS.bad : p.total == null ? LAT_COLORS.none : latencyColor(p.total);
   const via = p.via.length > 0;
-  const endpoint=endpointResult(r.to);
+  const endpoint=ui.origin.startsWith('device:')?deviceResults(store.deviceRuns,ui.origin.slice(7)).find(x=>x.target===r.to&&x.method==='ssh-banner'):ui.origin==='local'?endpointResult(r.to):null;
   const frps=store.status.local?.profiles?.[r.to]?.managementVia?.at(-1);
-  const frpRtt=frps?(store.status.local?.results||[]).filter(x=>x.source===r.to&&x.target===frps&&x.kind==='latency'&&x.state==='ok').sort((a,b)=>b.finishedAt-a.finishedAt)[0]:null;
-  const trace=(store.status.local?.results||[]).filter(x=>x.kind==='route'&&x.source===(lastPlan?.origin?.kind==='local'?'local':lastPlan?.origin?.id)&&x.target===r.to).sort((a,b)=>b.finishedAt-a.finishedAt)[0];
+  const frpRtt=!ui.origin.startsWith('device:')&&frps?(store.status.local?.results||[]).filter(x=>x.source===r.to&&x.target===frps&&x.kind==='latency'&&x.state==='ok').sort((a,b)=>b.finishedAt-a.finishedAt)[0]:null;
+  const trace=(ui.origin.startsWith('device:')?deviceResults(store.deviceRuns,ui.origin.slice(7)):(store.status.local?.results||[])).filter(x=>x.kind==='route'&&x.source===(lastPlan?.origin?.kind==='local'?(lastPlan.origin.id||'local'):lastPlan?.origin?.id)&&x.target===r.to).sort((a,b)=>b.finishedAt-a.finishedAt)[0];
   const save = via && r.direct.total != null && p.total != null ? r.direct.total - p.total : null;
   return `
     <div class="rp-row ${via ? 'via' : ''} ${r.suggest ? 'has-sug' : ''}" data-to="${r.to}">
@@ -281,9 +285,10 @@ export function openRouteForm({ from = 'local', to = '', via = [], route = null 
 
 // ---------------- 本机位置 ----------------
 export function openOriginForm() {
-  const o = store.settings.origin || {};
+  const device=ui.origin.startsWith('device:');
+  const o = device?originInfo(ui.origin)||{}:store.settings.origin || {};
   const m = openModal({
-    title: '本机位置',
+    title: device?'设备起点位置':'部署主机位置',
     content: `
     <form class="form">
       <div class="grid2">
@@ -300,7 +305,7 @@ export function openOriginForm() {
         <button type="button" class="btn sm" data-geo>📍 浏览器定位</button>
         <button type="button" class="btn sm" data-pick>在地图上点选</button>
       </div>
-      <p class="hint">只用来在地图上画起点。延迟数据来自 Hub 的探测，和这里填的位置无关。</p>
+      <p class="hint">只设置当前选中起点在地图上的位置，不改变实际测量来源。</p>
       <div class="form-actions"><span class="err"></span><button type="button" class="btn" data-close>取消</button><button class="btn primary" type="submit">保存</button></div>
     </form>`,
   });
@@ -339,7 +344,8 @@ export function openOriginForm() {
     const d = formData(form);
     try {
       if (d.lat === '' || d.lon === '') throw new Error('需要经纬度（选城市、定位或在地图上点选）');
-      await api('PUT', '/api/settings', { origin: { name: d.name, note: d.note, lat: Number(d.lat), lon: Number(d.lon) } });
+      if(device)await api('PUT','/api/device-tests/location',{deviceId:ui.origin.slice(7),name:d.name,lat:Number(d.lat),lon:Number(d.lon)});
+      else await api('PUT', '/api/settings', { origin: { name: d.name, note: d.note, lat: Number(d.lat), lon: Number(d.lon) } });
       toast('本机位置已保存', 'ok');
       m.close();
     } catch (err) {
@@ -349,3 +355,13 @@ export function openOriginForm() {
 }
 
 export const routeOrigin = () => ui.origin;
+
+export function setRouteOrigin(key,{notify=true}={}){ui.origin=key;persist();if(notify)handlers.onChange?.({refit:true});}
+export function renderSourceSelector(origin){
+ const root=$('#sourcebar');if(!root)return;root.classList.toggle('hidden',!store.localMode);
+ const items=originList();const signature=JSON.stringify([items,ui.origin]);
+ if(root.dataset.signature!==signature){root.dataset.signature=signature;root.innerHTML=`<label>测量起点 <select class="input" data-measurement-origin aria-label="测量起点">${items.map(o=>`<option value="${esc(o.key)}" ${o.key===ui.origin?'selected':''}>${esc(o.name)}</option>`).join('')}</select></label><small data-source-info></small><button class="link-btn" data-source-location>设置起点位置</button>`;}
+ $('[data-source-location]',root).hidden=origin?.kind!=='local';
+ const device=ui.origin.startsWith('device:');const run=device?(store.deviceRuns||[]).filter(r=>'device:'+r.deviceId===ui.origin).at(-1):null;
+ $('[data-source-info]',root).textContent=device?(run?'结果：'+new Date(run.finishedAt).toLocaleString()+' · 未测节点不补用后台数据':'尚无结果，请运行“此设备测试”的命令'):ui.origin==='local'?'显示部署主机发出的测量结果':'显示此 VPS 发出的互测结果';
+}

@@ -1,3 +1,5 @@
+import {receivedDeviceTask} from './device-state.js';
+import { openDeviceTests } from './ui/device-tests.js';
 import { openLocalMonitor } from './ui/local.js';
 // 入口：把 Hub 数据、3D 地球、各 UI 面板串起来。
 import './styles.css';
@@ -7,8 +9,8 @@ import { LabelManager } from './globe/labels.js';
 import { Markers } from './globe/Markers.js';
 import { Links } from './globe/Links.js';
 import { FlatMap } from './flat/FlatMap.js';
-import { initRoutePanel, renderRoutePanel, routeView } from './ui/routes.js';
-import { store, select, setView, computeEdges, serverById, recordLinkHistory } from './state.js';
+import { initRoutePanel, renderRoutePanel, routeView, setRouteOrigin, renderSourceSelector } from './ui/routes.js';
+import { store, select, setView, computeEdges, statusOf, serverById, recordLinkHistory } from './state.js';
 import { api, subscribe } from './api.js';
 import { $, $$, toast, confirmDialog, hasOpenModal } from './ui/dom.js';
 import { initSidebar, renderSidebar, renderStats } from './ui/sidebar.js';
@@ -32,15 +34,21 @@ const routeOn = () => store.view.mode === 'route';
 function refreshRoutes({ refit = false } = {}) {
   if (!routeOn() && !store.localMode) return flat.setRouteView(null);
   const rv = routeView();
+  store.activeDeviceId=rv.origin?.id?.startsWith('device:')?rv.origin.id:null;
+  store.activeOrigin=rv.origin?.kind==='srv'?rv.origin.id:store.activeDeviceId||'local';
+  renderSourceSelector(rv.origin);
   rv.layoutSegments = rv.segments; // 隐藏连线只影响显示，不改变重置视图时的地图切分。
   if(store.localMode){
     store.localEdges=rv.segments.map(e=>({...e,a:e.a==='@origin'&&rv.origin?.kind==='srv'?rv.origin.id:e.a}));
     links.setEdges(computeEdges());
     flat.setEdges(computeEdges());
-    markers.setData(mapServers(rv.origin),store.status.servers);
+    const mapStatus=Object.fromEntries(store.servers.map(s=>[s.id,statusOf(s.id)]));
+    markers.setData(mapServers(rv.origin),mapStatus);
+    flat.refreshStatus(mapStatus);
     rv.segments=computeEdges();
   }
   flat.setRouteView(rv);
+  renderSidebar();renderStats();
   if(routeOn())renderRoutePanel(rv.plan);
   if (refit) {
     // 整张世界地图，兼顾起点连线连续和节点左右分布。
@@ -59,6 +67,7 @@ async function loadState() {
     const s = await api('GET', '/api/state');
     Object.assign(store, {
       servers: s.servers,
+      deviceRuns: s.deviceRuns || [],
       localMode: s.localMode,
       links: s.links,
       routes: s.routes || [],
@@ -76,6 +85,8 @@ async function loadState() {
         localStorage.setItem('np.localLinksV1','1');setView({showLinks:true,showLinkLabels:true});
       }
     } catch {}
+    const received=receivedDeviceTask(store.deviceRuns);
+    if(received){setRouteOrigin('device:'+received.deviceId,{notify:false});toast('已收到 '+received.name+' 的结果，已切换测量起点','ok');}
     store.emit('data');
   } catch (e) {
     if (e.status === 401) {
@@ -349,6 +360,7 @@ const actions = {
       },
     }),
   'import-export': () => openImportExport(),
+  'device-tests': () => openDeviceTests(),
   'local-monitor': () => openLocalMonitor(),
   settings: () => openSettings({ onChanged: renderDetail }),
   install: () => openInstall(),

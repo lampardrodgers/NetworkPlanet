@@ -1,3 +1,4 @@
+import {deviceResults,preferredLatency} from '../shared/device-results.js';
 import { localMeasuredEdges } from './local-edges.js';
 // 全局前端状态 + 极简事件总线。
 import { estimateRttMs, CITIES } from '../shared/cities.js';
@@ -49,7 +50,13 @@ export function setView(patch) {
 }
 
 export const serverById = (id) => store.servers.find((s) => s.id === id);
-export const statusOf = (id) => store.status.servers?.[id] || null;
+export const statusOf = (id) => {
+  const source=store.activeOrigin||store.activeDeviceId||'local';
+  if(!store.localMode||source==='local')return store.status.servers?.[id]||null;
+  const results=source.startsWith('device:')?deviceResults(store.deviceRuns,source.slice(7)):(store.status.local?.results||[]).filter(r=>r.source===source).sort((a,b)=>b.finishedAt-a.finishedAt).filter((r,i,all)=>all.findIndex(x=>x.target===r.target&&x.method===r.method)===i);
+  const r=preferredLatency(results,id);
+  return {online:r?.state==='ok'?true:r?false:null,hubRtt:r?.state==='ok'?r.rtt:null,lastCheckedAt:r?.finishedAt||null,measurementStale:!!r,measurementMethod:r?.method};
+};
 
 export function select(sel) {
   const same = sel && store.selection && sel.type === store.selection.type && sel.id === store.selection.id;
@@ -105,7 +112,7 @@ export const alertsOf = (id) => (store.status.alerts || []).filter((x) => x.serv
 export function computeEdges() {
   if(store.localMode){
     const base=store.view.showLinks?(store.localEdges||[]):[];
-    return store.view.showMesh?localMeasuredEdges(base,store.status.local?.results||[],store.servers):base;
+    return store.view.showMesh?localMeasuredEdges(base,(store.status.local?.results||[]).filter(r=>!store.activeDeviceId||r.source!=='local'),store.servers):base;
   }
   const out = [];
   const seen = new Set();

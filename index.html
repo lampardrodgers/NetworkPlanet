@@ -19,7 +19,8 @@
       <div class="actions">
         <button class="btn primary" data-action="add-server" title="添加服务器">＋ 服务器</button>
         <button class="btn" data-action="add-link" title="添加连接">⇄ 连接</button>
-        <button class="btn primary" data-action="local-monitor">本地测量</button>
+        <button class="btn primary" data-action="device-tests">此设备测试</button>
+        <button class="btn" data-action="local-monitor">后台测量</button>
         <button class="btn" data-action="install" title="一条命令在所有 VPS 上安装探针">⤓ 安装探针</button>
         <button class="btn" data-action="providers" title="通过供应商 API 导入">☁ API 导入</button>
         <button class="btn" data-action="matrix" title="互联延迟矩阵">▦ 矩阵</button>
@@ -34,6 +35,7 @@
     <aside id="routepanel" class="hidden"></aside>
     <aside id="detail" class="hidden"></aside>
 
+    <section id="sourcebar" class="hidden" aria-label="测量起点切换"></section>
     <div id="viewbar">
       <button class="chip" data-mode="globe" title="3D 地球">🌐 地球</button>
       <button class="chip" data-mode="flat" title="平面点阵地图">🗺 平面</button>

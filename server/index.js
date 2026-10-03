@@ -1,3 +1,4 @@
+import { deviceTests } from './local/device-tests.js';
 import { LOCAL_MODE } from './local/config.js';
 import { getMeasurement, putProfile, configureMeasurement, startRound, stopRound, reschedule, onMeasurement, shutdownMeasurement } from './local/engine.js';
 // Network Planet Hub：REST API + SSE 实时推送 + 静态文件（生产模式下托管 dist/）。
@@ -100,6 +101,7 @@ function publicSettings() {
 function publicState() {
   const visible = new Set(db.servers.filter(s => !LOCAL_MODE || !s.demo).map(s => s.id));
   return {
+    deviceRuns: db.deviceRuns || [],
     servers: db.servers.filter(s => !LOCAL_MODE || !s.demo).map(({agentToken, machineId, ...s}) => s),
     localMode: LOCAL_MODE,
     links: db.links.filter(l => visible.has(l.a) && visible.has(l.b)),
@@ -178,6 +180,13 @@ const findServer = (id) => {
   if (!s) throw new HttpError(404, '服务器不存在');
   return s;
 };
+
+const deviceApi=deviceTests(db,save,()=>changed('device-tests'));
+route('GET','/api/device-tests',()=>deviceApi.list());
+route('PUT','/api/device-tests/location',(req,res,{body})=>deviceApi.location(body));
+route('POST','/api/device-tests',(req,res,{body})=>deviceApi.create(body));
+route('POST','/api/device-tests/upload',(req,res,{body})=>deviceApi.accept(body),{admin:false});
+route('POST','/api/device-tests/script',(req,res,{body})=>{res.setHeader('Cache-Control','no-store');return deviceApi.fetchScript(body);},{admin:false});
 
 route('GET', '/api/state', () => publicState());
 route('GET', '/api/status', () => statusPayload());
@@ -780,7 +789,7 @@ function serveFile(res, file) {
 }
 
 // Hub 自举安装：/hub/install.sh 是填好代码包地址的安装脚本，/hub/bundle.tar.gz 现场打包本 Hub 的代码（不含 data/）
-const BUNDLE_FILES = ['package.json', 'server', 'shared', 'agent', 'dist', 'scripts/install-hub.sh', 'README.md', 'docs'];
+const BUNDLE_FILES = ['package.json', 'server', 'shared', 'agent', 'dist', 'scripts', 'README.md', 'docs'];
 function hubOrigin(req) {
   return db.settings.publicUrl || `http://${req.headers.host || `localhost:${PORT}`}`;
 }

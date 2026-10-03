@@ -727,3 +727,9 @@ tr.ev:hover td { background: rgba(56, 189, 248, 0.06); }
 #map-placement details div { display: flex; gap: 8px; flex-wrap: wrap; margin: 9px 0; }
 #map-placement small { line-height: 1.6; }
 @media (max-width: 800px) { #map-placement { top: 120px; max-width: 90vw; width: max-content; } }
+
+/* 全部地图共用测量起点，避免只在线路面板里才能切换。 */
+#sourcebar {position:fixed;bottom:62px;left:50%;transform:translateX(-50%);z-index:22;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:7px 12px;max-width:calc(100vw - 32px);box-shadow:var(--shadow)}
+#sourcebar label {display:flex;align-items:center;gap:10px;white-space:nowrap}
+#sourcebar select {width:300px;max-width:60vw}
+#sourcebar small {display:block;color:var(--text-2);margin-top:4px;font-size:11px}

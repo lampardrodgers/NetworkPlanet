@@ -1,9 +1,11 @@
+import {deviceResults,preferredLatency} from '../shared/device-results.js';
 // 线路模式：从一个起点（本机 / 某台服务器 / 某个检测目标）出发，到每台 VPS 怎么走、每一跳多少延迟。
 //  - 起点 local：用 Hub 测到各机的延迟（Hub 跑在自己电脑上时，就是本机到 VPS 的延迟）
 //  - 起点 srv:<id>：用 Agent 之间互测的延迟
 //  - 起点 tgt:<id>：用各机 Agent 测这个检测目标（比如「上海电信」）的延迟，相当于「从这个运营商出发」
 //  - 有自定义线路（起点 → 中转… → 终点）就按线路走，否则直连
 //  - 另外在实测数据上跑一遍最短路，直连明显更慢时给出「建议经 X 中转」
+import {currentDeviceId} from './device-state.js';
 import { store, serverById, statusOf, measuredBetween, cityName } from './state.js';
 import { estimateRttMs, CITY_BY_KEY } from '../shared/cities.js';
 
@@ -11,14 +13,18 @@ const RELAY_COST = 2; // 每多一跳额外算 2ms（转发开销），避免为
 
 export function originList() {
   const o = store.settings.origin || {};
-  const list = [{ key: 'local', name: o.name || '本机', group: '本机' }];
-  for (const s of store.servers) if (store.localMode || s.lat != null) list.push({ key: `srv:${s.id}`, name: s.name, group: '服务器' });
+  const current=currentDeviceId(),reports=new Map((store.deviceRuns||[]).map(r=>[r.deviceId,r]));
+  const list = [{ key: 'local', name: '部署主机 · '+(o.name || store.status.local?.host || '后台主机'), group: '后台测量' }];
+  if(current)list.unshift({key:'device:'+current,name:'当前设备 · '+(reports.get(current)?.name||'尚未测试'),group:'设备测量'});
+  for(const r of reports.values())if(r.deviceId!==current)list.push({key:'device:'+r.deviceId,name:'其他设备 · '+r.name,group:'设备测量'});
+  for (const s of store.servers) if (store.localMode || s.lat != null) list.push({ key: `srv:${s.id}`, name: 'VPS · '+s.name, group: '服务器' });
   for (const t of store.localMode ? [] : store.settings.targets || []) if (t.enabled && t.city && CITY_BY_KEY[t.city]) list.push({ key: `tgt:${t.id}`, name: t.name, group: t.group || '检测目标' });
   return list;
 }
 
 /** 起点的位置与名称；本机还没设置位置时 lat 为 null */
 export function originInfo(key) {
+  if(key?.startsWith('device:')){const r=(store.deviceRuns||[]).filter(r=>'device:'+r.deviceId===key).at(-1);return r?{key,kind:'local',id:key,name:r.name,sub:'设备报告 · '+new Date(r.finishedAt).toLocaleString(),lat:r.lat,lon:r.lon}:key==='device:'+currentDeviceId()?{key,kind:'local',id:key,name:'当前设备',sub:'尚未回传测试结果',lat:null,lon:null}:null;}
   if (key === 'local') {
     const o = store.settings.origin || {};
     return { key, kind: 'local', name: o.name || '本机', sub: o.note || '', lat: o.lat ?? null, lon: o.lon ?? null };
@@ -37,15 +43,16 @@ export function originInfo(key) {
 
 /** 起点 → 某台服务器的一跳 */
 function localHop(source, target) {
+  if(source?.startsWith('device:')){const r=preferredLatency(deviceResults(store.deviceRuns,source.slice(7)),target);return r?.state==='ok'?{rtt:r.rtt,loss:r.loss,measured:true,method:r.method}:{rtt:null,loss:r?100:null,measured:!!r};}
   const p = store.status.local?.profiles?.[target];
-  const methods = ['icmp','tcp'];
+  const methods = ['icmp','ssh-banner','tcp'];
   const address = serverById(target)?.host || serverById(target)?.ip;
-  const r = (store.status.local?.results || []).filter(r => r.source === source && r.target === target && r.kind === 'latency' && r.state === 'ok' && methods.includes(r.method) && (source !== 'local' || (address && r.address === address))).sort((a,b) => methods.indexOf(a.method)-methods.indexOf(b.method) || b.finishedAt-a.finishedAt)[0];
+  const r = (store.status.local?.results || []).filter(r => r.source === source && r.target === target && r.kind === 'latency' && methods.includes(r.method) && (source !== 'local' || (address && r.address === address))).sort((a,b) => b.finishedAt-a.finishedAt).filter((r,i,all)=>all.findIndex(x=>x.method===r.method)===i).sort((a,b)=>Number(b.state==='ok')-Number(a.state==='ok')||methods.indexOf(a.method)-methods.indexOf(b.method))[0];
   if (!r || r.state !== 'ok') return { rtt: null, loss: null, measured: false };
   return {rtt:r.rtt,loss:r.loss??null,measured:true,method:r.method,stale:!!r.stale};
 }
 function firstHop(origin, toId) {
-  if (store.localMode) return localHop(origin.kind === 'local' ? 'local' : origin.id, toId);
+  if (store.localMode) return localHop(origin.kind === 'local' ? (origin.id||'local') : origin.id, toId);
   const to = serverById(toId);
   if (origin.kind === 'local') {
     const st = statusOf(toId);
@@ -76,8 +83,8 @@ export function evalPath(origin, via, to, hopLabels = []) {
   const hops = chain.map((id, i) => {
     const h = i === 0 ? firstHop(origin, id) : serverHop(chain[i - 1], id);
     const from=i===0?origin.key:chain[i-1];
-    const source=i===0?(origin.kind==='local'?'local':origin.id):chain[i-1];
-    const trace=(store.status.local?.results||[]).filter(r=>r.kind==='route'&&r.source===source&&r.target===id&&r.state==='ok').sort((a,b)=>b.finishedAt-a.finishedAt)[0];
+    const source=i===0?(origin.kind==='local'?(origin.id||'local'):origin.id):chain[i-1];
+    const trace=(source?.startsWith('device:')?deviceResults(store.deviceRuns,source.slice(7)):(store.status.local?.results||[])).filter(r=>r.kind==='route'&&r.source===source&&r.target===id&&r.state==='ok').sort((a,b)=>b.finishedAt-a.finishedAt)[0];
     return { from, to: id, label: (store.localMode && hopLabels[i]?.includes('VLESS') ? 'VLESS 规划 / 公网' : hopLabels[i]) || '', networks:trace?.networks||[], routeChecked:!!trace, ...h };
   });
   const down = hops.some((h) => h.measured && (h.rtt == null || h.loss >= 100));
@@ -162,7 +169,7 @@ export function planSegments(plan, { showSuggest = true } = {}) {
         measured: h.measured ? { rtt: h.rtt, loss: h.loss } : null,
         estimate: h.rtt ?? null,
         link: { label: store.localMode
-          ? h.networks?.length ? h.networks.map(n=>n.replace(/^(电信|移动|联通)\s+/, '')).join(' / ')
+          ? h.method==='ssh-banner'?'SSH 端到端':h.networks?.length ? h.networks.map(n=>n.replace(/^(电信|移动|联通)\s+/, '')).join(' / ')
             : /端到端/.test(h.label||'') ? '端到端' : /frp/i.test(h.label||'') ? 'frp' : /VLESS/.test(h.label||'') ? '公网' : '未知线路'
           : h.label || '', compact:store.localMode },
         dests: new Set(),
@@ -174,8 +181,11 @@ export function planSegments(plan, { showSuggest = true } = {}) {
     if (kind === 'route') seg.route = 'route';
     seg.dests.add(dest);
   };
-  for (const r of plan.rows) for (const h of r.path.hops) add(h, r.route?.via.length ? 'route' : 'direct', r.to);
-  if(store.localMode && plan.origin?.kind==='local') for(const row of plan.rows){
+  for (const r of plan.rows) {
+    if(plan.origin?.id?.startsWith('device:')&&!(serverById(r.to)?.host||serverById(r.to)?.ip)&&r.path.total==null&&!r.path.down)continue;
+    for (const h of r.path.hops) add(h, r.route?.via.length ? 'route' : 'direct', r.to);
+  }
+  if(store.localMode && plan.origin?.kind==='local' && !plan.origin.id) for(const row of plan.rows){
     const srv=serverById(row.to);
     // 有独立地址的 VPS 始终保留本机直连；中转段另画，不以中转代替 DIRECT。
     if(row.path.via.length&&(srv?.ip||srv?.host))for(const hop of row.direct.hops)add(hop,'direct',row.to);
@@ -184,7 +194,7 @@ export function planSegments(plan, { showSuggest = true } = {}) {
     const r=(store.status.local?.results||[]).filter(r=>r.source==='local'&&r.target===row.to&&r.method==='ssh-banner'&&r.address===p?.endpoint?.host&&r.port===p?.endpoint?.port).sort((a,b)=>b.finishedAt-a.finishedAt)[0];
     if(r?.state==='ok')add({from:plan.origin.key,to:row.to,measured:true,rtt:r.rtt,stale:r.stale,label:'端到端（SSH）'},'direct',row.to);
   }
-  if(store.localMode)for(const r of [...(store.status.local?.results||[])].sort((a,b)=>b.finishedAt-a.finishedAt)){
+  if(store.localMode&&!plan.origin?.id?.startsWith('device:'))for(const r of [...(store.status.local?.results||[])].sort((a,b)=>b.finishedAt-a.finishedAt)){
     if(r.source==='local'||r.kind!=='latency'||r.state!=='ok'||!['icmp','tcp'].includes(r.method))continue;
     if(!plan.rows.some(row=>row.path.hops.some(h=>h.from===r.target&&h.to===r.source)))continue;
     const key=`${r.source}>${r.target}`;

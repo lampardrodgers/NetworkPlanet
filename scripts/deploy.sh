@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 echo "[deploy] 构建前端…"
 npm run build >/dev/null
 PKG=$(mktemp -d)/network-planet.tar.gz
-COPYFILE_DISABLE=1 tar -czf "$PKG" package.json server shared agent dist scripts/install-hub.sh README.md docs
+COPYFILE_DISABLE=1 tar -czf "$PKG" package.json server shared agent dist scripts README.md docs
 echo "[deploy] 上传 $(du -h "$PKG" | cut -f1) 到 $TARGET …"
 scp -q -P "$SSH_PORT" "$PKG" scripts/install-hub.sh "$TARGET:/tmp/"
 SUDO=""
